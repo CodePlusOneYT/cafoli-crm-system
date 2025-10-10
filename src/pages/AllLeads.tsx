@@ -11,6 +11,7 @@ import { api } from "@/convex/_generated/api";
 import { ROLES } from "@/convex/schema";
 import { useMemo, useState, useEffect } from "react";
 import { useNavigate } from "react-router";
+import { useLocation } from "react-router";
 import { toast } from "sonner";
 
 type Filter = "all" | "assigned" | "unassigned";
@@ -18,6 +19,17 @@ type Filter = "all" | "assigned" | "unassigned";
 export default function AllLeadsPage() {
   const { currentUser, initializeAuth } = useCrmAuth();
   const navigate = useNavigate();
+  const location = useLocation();
+
+  // Define dashboard-enforced heat route to avoid use-before-declaration issues
+  const enforcedHeatRoute: "hot" | "cold" | "mature" | "" =
+    location.pathname.includes("/dashboard/hot")
+      ? "hot"
+      : location.pathname.includes("/dashboard/cold")
+      ? "cold"
+      : location.pathname.includes("/dashboard/mature")
+      ? "mature"
+      : "";
 
   // Add: wait for auth to settle before running queries (prevents early invalid args in deploy)
   const [authReady, setAuthReady] = useState(false);
@@ -38,6 +50,14 @@ export default function AllLeadsPage() {
   }, [currentUser, navigate]);
 
   const [filter, setFilter] = useState<Filter>("all");
+  const [showNotRelevant, setShowNotRelevant] = useState(false);
+  // For non-admins on /all_leads, default to "Unassigned" so assigned leads disappear from this list
+  useEffect(() => {
+    if (!authReady || !currentUser) return;
+    if (!enforcedHeatRoute && currentUser.role !== ROLES.ADMIN && filter === "all") {
+      setFilter("unassigned");
+    }
+  }, [authReady, currentUser?._id, currentUser?.role, enforcedHeatRoute, filter]);
   // Ensure stable, string-only state for the assignee filter to avoid re-render loops
   const [assigneeFilter, setAssigneeFilter] = useState<string>("all");
   const [search, setSearch] = useState("");
@@ -45,8 +65,8 @@ export default function AllLeadsPage() {
     api.leads.getAllLeads,
     currentUser && authReady
       ? {
-          // keep your existing filter if present
-          // filter,
+          // Pass the selected filter to the backend so results match the UI buttons
+          filter,
           currentUserId: currentUser._id as any,
           assigneeId:
             assigneeFilter === "all"
@@ -72,6 +92,37 @@ export default function AllLeadsPage() {
   const updateLeadStatus = useMutation(api.leads.updateLeadStatus);
   const updateLeadDetails = useMutation(api.leads.updateLeadDetails);
   const updateLeadHeat = useMutation(api.leads.updateLeadHeat);
+
+  // New: also subscribe to my leads (used for dashboard heat routes for Manager/Staff)
+  const myLeads = useQuery(
+    api.leads.getMyLeads,
+    currentUser && authReady ? { currentUserId: currentUser._id } : "skip"
+  );
+
+  const notRelevantLeads = useQuery(
+    api.leads.getNotRelevantLeads,
+    currentUser && authReady && showNotRelevant && currentUser.role === ROLES.ADMIN
+      ? { currentUserId: currentUser._id }
+      : "skip"
+  );
+
+  // Decide data source: Admin -> all leads; Manager/Staff -> depends on context
+  const sourceLeads = useMemo(() => {
+    if (!currentUser) return leads;
+    
+    // If showing not relevant leads, use that data source
+    if (showNotRelevant && currentUser.role === ROLES.ADMIN) {
+      return notRelevantLeads;
+    }
+    
+    // For dashboard heat routes, non-admins should see their assigned leads
+    if (enforcedHeatRoute && currentUser.role !== ROLES.ADMIN) {
+      return myLeads;
+    }
+    
+    // For regular All Leads page, everyone sees the filtered results from getAllLeads
+    return leads;
+  }, [currentUser?.role, leads, myLeads, enforcedHeatRoute, showNotRelevant, notRelevantLeads]);
 
   const userOptions = useMemo(() => {
     if (!currentUser) return [];
@@ -161,10 +212,34 @@ export default function AllLeadsPage() {
 
   // Compute filtered leads locally
   const filteredLeads = useMemo(() => {
+    const arr: Array<any> = ((sourceLeads ?? []) as Array<any>);
+
+    // Apply UI-level assignment filters so assigned leads disappear immediately on /all_leads
+    const withAssignFilters = arr.filter((lead: any) => {
+      const assignedId = String(
+        lead?.assignedTo ||
+          lead?.assignedUserId ||
+          lead?.assignedUser?._id ||
+          ""
+      );
+      const hasAssignee = !!assignedId || !!lead?.assignedUserName;
+
+      // Top buttons: All / Assigned / Unassigned
+      if (filter === "unassigned" && hasAssignee) return false;
+      if (filter === "assigned" && !hasAssignee) return false;
+
+      // Account dropdown: All / Unassigned / Specific user
+      if (assigneeFilter === "unassigned") return !hasAssignee;
+      if (assigneeFilter !== "all") {
+        return assignedId && assignedId === assigneeFilter;
+      }
+      return true;
+    });
+
     const q = (search || "").trim().toLowerCase();
-    if (!q) return leads ?? [];
-    const arr = leads ?? [];
-    return arr.filter((lead: any) => {
+    if (!q) return withAssignFilters;
+
+    return withAssignFilters.filter((lead: any) => {
       const fields = [
         lead?.name,
         lead?.subject,
@@ -180,58 +255,151 @@ export default function AllLeadsPage() {
         lead?.source,
         lead?.assignedUserName,
       ];
-      return fields.some((f) => (String(f || "").toLowerCase().includes(q)));
+      return fields.some((f) => String(f || "").toLowerCase().includes(q));
     });
-  }, [leads, search]);
+  }, [sourceLeads, search, filter, assigneeFilter]);
+
+  // Apply enforced heat from dashboard; exclude leads without a heat
+  const filteredLeadsByDashboardHeat = (() => {
+    const base: Array<any> =
+      (typeof filteredLeads !== "undefined"
+        ? (filteredLeads as Array<any>)
+        : (sourceLeads as Array<any>)) ?? [];
+    if (!enforcedHeatRoute) return base;
+
+    const norm = (s: any) =>
+      String(s ?? "")
+        .toLowerCase()
+        .trim();
+
+    return base.filter((l) => {
+      const raw = l?.heat ?? l?.Heat ?? l?.leadType;
+      const n = norm(raw);
+      if (!n) return false;
+
+      if (enforcedHeatRoute === "hot") {
+        return n === "hot" || n.includes("hot");
+      }
+      if (enforcedHeatRoute === "cold") {
+        return n === "cold" || n.includes("cold");
+      }
+      if (enforcedHeatRoute === "mature") {
+        return n === "matured" || n.startsWith("mature");
+      }
+      return false;
+    });
+  })();
+
+  // Sort by heat for consistent ordering (Hot -> Mature/Matured -> Cold -> Unset)
+  const normalizeHeat = (s: any) =>
+    String(s ?? "")
+      .toLowerCase()
+      .trim()
+      .replace(/[\s_-]+/g, "");
+
+  const heatOrder = (h: any) => {
+    const n = String(h ?? "").toLowerCase().trim();
+    if (n === "hot") return 0;
+    if (n === "matured" || n === "mature") return 1;
+    if (n === "cold") return 2;
+    return 3; // unset/others
+  };
+
+  const displayedLeadsSorted: Array<any> = [...((filteredLeadsByDashboardHeat ?? []) as Array<any>)].sort(
+    (a, b) => heatOrder(a?.heat) - heatOrder(b?.heat)
+  );
 
   return (
     <Layout>
       <div className="max-w-6xl mx-auto space-y-6">
-        <div className="flex items-center justify-between">
-          <h1 className="text-2xl font-bold">All Leads</h1>
-          <div className="flex items-center gap-2">
-            <div className="hidden sm:block">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <h1 className="text-2xl font-bold">
+            {showNotRelevant
+              ? "Not Relevant Leads"
+              : enforcedHeatRoute === "cold"
+              ? "Cold Leads"
+              : enforcedHeatRoute === "hot"
+              ? "Hot Leads"
+              : enforcedHeatRoute === "mature"
+              ? "Mature Leads"
+              : "All Leads"}
+          </h1>
+
+          <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
+            <div className="flex-1 min-w-[180px] sm:min-w-[240px] sm:max-w-[260px]">
               <Input
                 placeholder="Search leads..."
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                className="w-60"
+                className="w-full"
               />
             </div>
-            <div className="sm:hidden w-full">
-              <Input
-                placeholder="Search leads..."
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                className="w-40"
-              />
-            </div>
-            <Button variant={filter === "all" ? "default" : "outline"} onClick={() => setFilter("all")}>All</Button>
-            <Button variant={filter === "assigned" ? "default" : "outline"} onClick={() => setFilter("assigned")}>Assigned</Button>
-            <Button variant={filter === "unassigned" ? "default" : "outline"} onClick={() => setFilter("unassigned")}>Unassigned</Button>
-            <div className="w-56">
-              <Select
-                value={assigneeFilter}
-                onValueChange={(val) => {
-                  // Keep state as string only to prevent unstable object identity loops
-                  setAssigneeFilter(val);
-                }}
-              >
-                <SelectTrigger>
-                  <SelectValue placeholder="Filter by Account" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All Accounts</SelectItem>
-                  <SelectItem value="unassigned">Unassigned</SelectItem>
-                  {/* Dynamically list all users as options */}
-                  {(users ?? []).map((u: any) => (
-                    <SelectItem key={String(u._id)} value={String(u._id)}>
-                      {u.name || u.username || "Unknown"}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
+
+            {currentUser.role === ROLES.ADMIN && (
+              <>
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    variant={filter === "all" ? "default" : "outline"}
+                    onClick={() => {
+                      setFilter("all");
+                      setShowNotRelevant(false);
+                    }}
+                    className="shrink-0"
+                  >
+                    All
+                  </Button>
+                  <Button
+                    variant={filter === "assigned" ? "default" : "outline"}
+                    onClick={() => {
+                      setFilter("assigned");
+                      setShowNotRelevant(false);
+                    }}
+                    className="shrink-0"
+                  >
+                    Assigned
+                  </Button>
+                  <Button
+                    variant={filter === "unassigned" ? "default" : "outline"}
+                    onClick={() => {
+                      setFilter("unassigned");
+                      setShowNotRelevant(false);
+                    }}
+                    className="shrink-0"
+                  >
+                    Unassigned
+                  </Button>
+                  <Button
+                    variant={showNotRelevant ? "default" : "outline"}
+                    onClick={() => setShowNotRelevant(!showNotRelevant)}
+                    className="shrink-0"
+                  >
+                    Not Relevant
+                  </Button>
+                </div>
+
+                <div className="w-full sm:w-56">
+                  <Select
+                    value={assigneeFilter}
+                    onValueChange={(val) => {
+                      setAssigneeFilter(val);
+                    }}
+                  >
+                    <SelectTrigger className="w-full">
+                      <SelectValue placeholder="Filter by Account" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All Accounts</SelectItem>
+                      <SelectItem value="unassigned">Unassigned</SelectItem>
+                      {(users ?? []).map((u: any) => (
+                        <SelectItem key={String(u._id)} value={String(u._id)}>
+                          {u.name || u.username || "Unknown"}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </>
+            )}
           </div>
         </div>
 
@@ -265,7 +433,7 @@ export default function AllLeadsPage() {
           </CardHeader>
           <CardContent>
             <Accordion type="single" collapsible className="w-full">
-              {(filteredLeads ?? []).map((lead: any) => (
+              {displayedLeadsSorted.map((lead: any) => (
                 <AccordionItem key={String(lead._id)} value={String(lead._id)}>
                   <AccordionTrigger className="text-left">
                     <div className="flex flex-col w-full gap-2">

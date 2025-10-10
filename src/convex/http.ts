@@ -115,6 +115,26 @@ async function ipstackLookup(ip: string): Promise<any | null> {
   }
 }
 
+// Add: apiip.net lookup
+async function apiipLookup(ip: string): Promise<any | null> {
+  try {
+    const key = process.env.APIIP_ACCESS_KEY;
+    const base = process.env.APIIP_BASE_URL || "https://apiip.net/api/check";
+    if (!key || !base) return null;
+
+    const url = `${base}?ip=${encodeURIComponent(ip)}&accessKey=${encodeURIComponent(key)}`;
+    const res = await fetch(url);
+    if (!res.ok) return null;
+
+    const json = await res.json();
+    // Some providers signal errors inside the JSON
+    if (json?.success === false && json?.message) return null;
+    return json;
+  } catch {
+    return null;
+  }
+}
+
 // Log webhooks for debugging/recordkeeping
 http.route({
   path: "/api/webhook/logs",
@@ -318,26 +338,53 @@ http.route({
       const ip = getClientIp(req) || "Unknown";
       const ua = req.headers.get("user-agent") || "Unknown";
 
-      const ipInfo = ip !== "Unknown" ? await ipstackLookup(ip) : null;
+      // Prefer apiip; fallback to ipstack to preserve compatibility
+      const apiipInfo = ip !== "Unknown" ? await apiipLookup(ip) : null;
+      const ipstackInfo = !apiipInfo && ip !== "Unknown" ? await ipstackLookup(ip) : null;
+
+      // Extract display-friendly fields (prefer apiip)
+      const city =
+        apiipInfo?.city ??
+        apiipInfo?.location?.city ??
+        ipstackInfo?.city ??
+        "-";
+      const region =
+        apiipInfo?.region_name ??
+        apiipInfo?.region ??
+        apiipInfo?.location?.region ??
+        ipstackInfo?.region_name ??
+        "-";
+      const country =
+        apiipInfo?.country_name ??
+        apiipInfo?.country ??
+        apiipInfo?.location?.country ??
+        ipstackInfo?.country_name ??
+        "-";
+      const isp =
+        apiipInfo?.connection?.isp ??
+        apiipInfo?.isp ??
+        ipstackInfo?.connection?.isp ??
+        "-";
 
       // Build formatted details (human-readable)
       const lines: string[] = [];
       lines.push("LOGIN IP LOG");
       lines.push(`Username: ${username || "-"}`);
       lines.push(`IP: ${ip}`);
-      if (ipInfo) {
-        lines.push(`City: ${ipInfo.city ?? "-"}`);
-        lines.push(`Region: ${ipInfo.region_name ?? "-"}`);
-        lines.push(`Country: ${ipInfo.country_name ?? "-"}`);
-        lines.push(`ISP: ${ipInfo?.connection?.isp ?? "-"}`);
+      if (apiipInfo || ipstackInfo) {
+        lines.push(`City: ${city}`);
+        lines.push(`Region: ${region}`);
+        lines.push(`Country: ${country}`);
+        lines.push(`ISP: ${isp}`);
+        // Add a hint that full JSON is attached
+        lines.push(`Provider: ${apiipInfo ? "apiip.net" : "ipstack"}`);
       } else {
-        lines.push("Geolocation: (ipstack disabled or unavailable)");
+        lines.push("Geolocation: (apiip/ipstack disabled or unavailable)");
       }
       lines.push(`User-Agent: ${ua}`);
       const details = lines.join("\n");
 
-      // Store in auditLogs
-      // Use an admin/system id for userId via ensureAdminUserId (same pattern as other endpoints)
+      // Store in auditLogs (full raw provider payloads included)
       const systemUserId = await ensureAdminUserId(ctx);
       await ctx.runMutation(internal.webhook.insertLog, {
         payload: {
@@ -345,25 +392,25 @@ http.route({
           username,
           ip,
           userAgent: ua,
-          ipstack: ipInfo,
+          apiip: apiipInfo || null,     // full apiip payload if available
+          ipstack: ipstackInfo || null, // legacy field for backward compatibility
           formatted: details,
           ts: new Date().toISOString(),
         },
       });
-
-      // (removed optional insertLoginLog call — already persisted via internal.webhook.insertLog)
 
       return corsJson(
         {
           ok: true,
           username,
           ip,
-          city: ipInfo?.city ?? null,
-          region: ipInfo?.region_name ?? null,
-          country: ipInfo?.country_name ?? null,
-          isp: ipInfo?.connection?.isp ?? null,
+          city,
+          region,
+          country,
+          isp,
           userAgent: ua,
           formatted: details,
+          provider: apiipInfo ? "apiip.net" : (ipstackInfo ? "ipstack" : "none"),
         },
         200
       );
@@ -374,6 +421,7 @@ http.route({
 });
 
 // New: GET /api/iplogging — Admin-only view of latest login IP logs (formatted)
+// Make this endpoint resilient: never 500; return empty logs on internal errors.
 http.route({
   path: "/api/iplogging",
   method: "GET",
@@ -384,46 +432,106 @@ http.route({
       const cursorParam = url.searchParams.get("cursor");
       const limit = Math.max(1, Math.min(limitParam, 50));
 
-      // Use an ensured admin/system user to access admin-only query
-      const adminUserId = await ensureAdminUserId(ctx);
+      const sinceDaysParam = Number(url.searchParams.get("sinceDays") ?? "30");
+      const days = Number.isFinite(sinceDaysParam) && sinceDaysParam > 0 ? sinceDaysParam : 30;
+      const now = Date.now();
+      const sinceTs = now - days * 24 * 60 * 60 * 1000;
 
-      // Pull WEBHOOK_LOGs paginated, then filter to LOGIN_IP_LOG
-      const { items, isDone, continueCursor } = await ctx.runQuery(
-        api.audit.getWebhookLogs,
-        {
+      let adminUserId: any = null;
+      try {
+        adminUserId = await ensureAdminUserId(ctx);
+      } catch {
+        return corsJson(
+          {
+            ok: true,
+            count: 0,
+            logs: [],
+            isDone: true,
+            continueCursor: null,
+            warning: "Could not ensure admin user; returning empty logs.",
+          },
+          200
+        );
+      }
+
+      let items: any[] = [];
+      let isDone = true;
+      let continueCursor: string | null = null;
+      try {
+        const page = await ctx.runQuery(api.audit.getWebhookLogs, {
           currentUserId: adminUserId,
           paginationOpts: {
             numItems: limit,
             cursor: cursorParam ?? null,
           },
-        }
-      );
+          sinceTs,
+        });
+        items = Array.isArray((page as any)?.items) ? (page as any).items : [];
+        isDone = Boolean((page as any)?.isDone);
+        continueCursor = (page as any)?.continueCursor ?? null;
+      } catch (e: any) {
+        return corsJson(
+          {
+            ok: true,
+            count: 0,
+            logs: [],
+            isDone: true,
+            continueCursor: null,
+            warning: `Failed to load logs: ${e?.message || "unknown error"}`,
+          },
+          200
+        );
+      }
 
-      const loginLogs = items
-        .filter((l) => {
-          try {
-            const d = JSON.parse(l.details || "{}");
-            return d?.type === "LOGIN_IP_LOG";
-          } catch {
-            return false;
-          }
-        })
-        .sort((a, b) => b.timestamp - a.timestamp)
-        .map((l) => {
+      const loginLogs: any[] = [];
+      for (const l of items) {
+        try {
           const d = JSON.parse(l.details || "{}");
-          return {
+
+          if (d?.type !== "LOGIN_IP_LOG") continue;
+
+          // Prefer apiip fields, fallback to ipstack
+          const city =
+            d.apiip?.city ??
+            d.apiip?.location?.city ??
+            d.ipstack?.city ??
+            null;
+          const region =
+            d.apiip?.region_name ??
+            d.apiip?.region ??
+            d.apiip?.location?.region ??
+            d.ipstack?.region_name ??
+            null;
+          const country =
+            d.apiip?.country_name ??
+            d.apiip?.country ??
+            d.apiip?.location?.country ??
+            d.ipstack?.country_name ??
+            null;
+          const isp =
+            d.apiip?.connection?.isp ??
+            d.apiip?.isp ??
+            d.ipstack?.connection?.isp ??
+            null;
+
+          loginLogs.push({
             _id: l._id,
             timestamp: l.timestamp,
             username: d.username ?? null,
             ip: d.ip ?? null,
-            city: d.ipstack?.city ?? null,
-            region: d.ipstack?.region_name ?? null,
-            country: d.ipstack?.country_name ?? null,
-            isp: d.ipstack?.connection?.isp ?? null,
+            city,
+            region,
+            country,
+            isp,
             userAgent: d.userAgent ?? null,
             formatted: d.formatted ?? null,
-          };
-        });
+          });
+        } catch {
+          continue;
+        }
+      }
+
+      loginLogs.sort((a, b) => b.timestamp - a.timestamp);
 
       return corsJson(
         {
@@ -436,7 +544,17 @@ http.route({
         200
       );
     } catch (e: any) {
-      return corsJson({ ok: false, error: e?.message || "error" }, 500);
+      return corsJson(
+        {
+          ok: true,
+          count: 0,
+          logs: [],
+          isDone: true,
+          continueCursor: null,
+          warning: e?.message || "Unhandled error",
+        },
+        200
+      );
     }
   }),
 });

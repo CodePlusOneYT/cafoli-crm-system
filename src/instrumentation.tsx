@@ -11,7 +11,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Dialog } from "@radix-ui/react-dialog";
-import { ChevronDown, ExternalLink } from "lucide-react";
+import { ChevronDown } from "lucide-react";
 import React, { useEffect, useState } from "react";
 
 type SyncError = {
@@ -72,31 +72,21 @@ function ErrorDialog({
         <DialogHeader>
           <DialogTitle>Runtime Error</DialogTitle>
         </DialogHeader>
-        A runtime error occurred. Open the vly editor to automatically debug the
-        error.
-        <div className="mt-4">
-          <Collapsible>
-            <CollapsibleTrigger>
-              <div className="flex items-center font-bold cursor-pointer">
-                See error details <ChevronDown />
-              </div>
-            </CollapsibleTrigger>
-            <CollapsibleContent className="max-w-[460px]">
-              <div className="mt-2 p-3 bg-neutral-800 rounded text-white text-sm overflow-x-auto max-h-60 max-w-full [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
-                <pre className="whitespace-pre">{error.stack}</pre>
-              </div>
-            </CollapsibleContent>
-          </Collapsible>
+        <div className="mb-4">
+          A Runtime Error Occurred. Please copy and paste the error message to the Developer with a full screen screenshot.
         </div>
+        <Collapsible>
+          <CollapsibleTrigger className="flex items-center gap-2 text-sm">
+            See error details <ChevronDown className="h-4 w-4" />
+          </CollapsibleTrigger>
+          <CollapsibleContent className="max-w-[460px]">
+            <div className="mt-2 p-3 bg-neutral-800 rounded text-white text-sm overflow-x-auto max-h-100 max-w-full [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
+              <pre className="whitespace-pre">{error.stack}</pre>
+            </div>
+          </CollapsibleContent>
+        </Collapsible>
         <DialogFooter>
-          <a
-            href={`https://vly.ai/project/${import.meta.env.VITE_VLY_APP_ID}`}
-            target="_blank"
-          >
-            <Button>
-              <ExternalLink /> Open editor
-            </Button>
-          </a>
+          {/* Open editor button removed as requested */}
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -120,22 +110,10 @@ class ErrorBoundary extends React.Component<
   }
 
   static getDerivedStateFromError() {
-    // Update state so the next render will show the fallback UI.
     return { hasError: true };
   }
 
   componentDidCatch(error: Error, info: React.ErrorInfo) {
-    // logErrorToMyService(
-    //   error,
-    //   // Example "componentStack":
-    //   //   in ComponentThatThrows (created by App)
-    //   //   in ErrorBoundary (created by App)
-    //   //   in div (created by App)
-    //   //   in App
-    //   info.componentStack,
-    //   // Warning: `captureOwnerStack` is not available in production.
-    //   React.captureOwnerStack(),
-    // );
     reportErrorToVly({
       error: error.message,
       stackTrace: error.stack,
@@ -151,7 +129,6 @@ class ErrorBoundary extends React.Component<
 
   render() {
     if (this.state.hasError) {
-      // You can render any custom fallback UI
       return (
         <ErrorDialog
           error={{
@@ -229,6 +206,7 @@ export function InstrumentationProvider({
       window.removeEventListener("unhandledrejection", handleRejection);
     };
   }, []);
+  
   return (
     <>
       <ErrorBoundary>{children}</ErrorBoundary>

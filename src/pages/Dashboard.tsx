@@ -5,37 +5,82 @@ import { useCrmAuth } from "@/hooks/use-crm-auth";
 import { useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { motion } from "framer-motion";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate } from "react-router";
 import { Users, FileText, Clock, TrendingUp, Bell, Target } from "lucide-react";
 import { ROLES } from "@/convex/schema";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+
+// ADD: helpers to categorize sources and count breakdowns
+function normalizeSource(raw: any): string {
+  const s = String(raw ?? "").toLowerCase();
+  return s;
+}
+function isIndiamart(lead: any): boolean {
+  const s = normalizeSource(lead?.source);
+  return s.includes("indiamart");
+}
+function isPharmavends(lead: any): boolean {
+  const s = normalizeSource(lead?.source);
+  return s.includes("pharmavend");
+}
+function splitCounts(list: Array<any>) {
+  const total = list.length;
+  const indiamart = list.filter(isIndiamart).length;
+  const pharmavends = list.filter(isPharmavends).length;
+  const oldData = total - indiamart - pharmavends;
+  return { total, indiamart, pharmavends, oldData };
+}
 
 export default function Dashboard() {
   const { currentUser } = useCrmAuth();
   const navigate = useNavigate();
+  
+  // Add: Admin user selector state
+  const [selectedUserId, setSelectedUserId] = useState<string | null>(null);
 
   useEffect(() => {
     if (!currentUser) navigate("/");
   }, [currentUser, navigate]);
 
+  // Add: Fetch all users for admin selector
+  const allUsers = useQuery(
+    api.users.getAllUsers,
+    currentUser?.role === ROLES.ADMIN ? { currentUserId: currentUser._id } : "skip"
+  );
+
+  // Determine which user's data to display
+  const displayUserId = currentUser?.role === ROLES.ADMIN && selectedUserId 
+    ? selectedUserId 
+    : currentUser?._id;
+
   const myLeads = useQuery(
     api.leads.getMyLeads,
-    currentUser ? { currentUserId: currentUser._id } : "skip"
+    displayUserId ? { currentUserId: displayUserId as any } : "skip"
   );
 
   // Get comments for all my leads to check followup completion
   const allComments = useQuery(
     api.comments.getAllCommentsForUser,
-    currentUser ? { currentUserId: currentUser._id } : "skip"
+    displayUserId ? { currentUserId: displayUserId as any } : "skip"
   );
 
   if (!currentUser) return null;
 
   // Compute requested metrics from my leads
   const myLeadsCount = myLeads?.length || 0;
-  const hotLeads = (myLeads ?? []).filter((l: any) => (l.heat || "").toLowerCase() === "hot").length;
-  const coldLeads = (myLeads ?? []).filter((l: any) => (l.heat || "").toLowerCase() === "cold").length;
-  const maturedLeads = (myLeads ?? []).filter((l: any) => (l.heat || "").toLowerCase() === "matured").length;
+  const hotList = (myLeads ?? []).filter((l: any) => (l.heat || "").toLowerCase() === "hot");
+  const coldList = (myLeads ?? []).filter((l: any) => (l.heat || "").toLowerCase() === "cold");
+  const maturedList = (myLeads ?? []).filter((l: any) => (l.heat || "").toLowerCase() === "matured");
+  const hotLeads = hotList.length;
+  const coldLeads = coldList.length;
+  const maturedLeads = maturedList.length;
+
+  // ADD: compute breakdowns for each card scope
+  const allBreak = splitCounts(myLeads ?? []);
+  const hotBreak = splitCounts(hotList);
+  const coldBreak = splitCounts(coldList);
+  const maturedBreak = splitCounts(maturedList);
 
   let closestFollowupText = "None";
   const now = Date.now();
@@ -62,6 +107,8 @@ export default function Dashboard() {
     closestFollowupText = `${next.name || "Lead"} • ${followupDate.toLocaleString()}${isOverdue ? " (Overdue)" : ""}`;
   }
 
+  const pendingBreak = splitCounts(pendingFollowups);
+
   const stats = [
     {
       title: "Leads Assigned",
@@ -70,6 +117,7 @@ export default function Dashboard() {
       color: "from-indigo-500 to-indigo-600",
       description: "Assigned to you",
       route: "/dashboard/assigned",
+      breakdown: allBreak,
     },
     {
       title: "Hot Leads",
@@ -78,6 +126,7 @@ export default function Dashboard() {
       color: "from-red-500 to-red-600",
       description: "High-priority",
       route: "/dashboard/hot",
+      breakdown: hotBreak,
     },
     {
       title: "Cold Leads",
@@ -86,6 +135,7 @@ export default function Dashboard() {
       color: "from-blue-500 to-blue-600",
       description: "Low-priority",
       route: "/dashboard/cold",
+      breakdown: coldBreak,
     },
     {
       title: "Mature Leads",
@@ -94,6 +144,7 @@ export default function Dashboard() {
       color: "from-green-500 to-green-600",
       description: "Ready to close",
       route: "/dashboard/mature",
+      breakdown: maturedBreak,
     },
     {
       title: "Closest Followup",
@@ -102,6 +153,7 @@ export default function Dashboard() {
       color: "from-orange-500 to-orange-600",
       description: "Pending followup",
       route: "/dashboard/followup",
+      breakdown: pendingBreak,
     },
   ];
 
@@ -114,6 +166,30 @@ export default function Dashboard() {
           </h1>
           <p className="text-gray-600 mt-2">Key metrics at a glance</p>
           <Badge variant="secondary" className="mt-2 capitalize">{currentUser.role}</Badge>
+          
+          {/* Admin User Selector */}
+          {currentUser.role === ROLES.ADMIN && allUsers && allUsers.length > 0 && (
+            <div className="mt-4 flex justify-center">
+              <Select
+                value={selectedUserId || "own"}
+                onValueChange={(value) => setSelectedUserId(value === "own" ? null : value)}
+              >
+                <SelectTrigger className="w-64">
+                  <SelectValue placeholder="Select user to view" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="own">My Dashboard</SelectItem>
+                  {allUsers
+                    .filter((u: any) => u.role === ROLES.MANAGER || u.role === ROLES.STAFF)
+                    .map((u: any) => (
+                      <SelectItem key={String(u._id)} value={String(u._id)}>
+                        {u.name || u.username} ({u.role})
+                      </SelectItem>
+                    ))}
+                </SelectContent>
+              </Select>
+            </div>
+          )}
         </motion.div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
@@ -146,6 +222,12 @@ export default function Dashboard() {
                       {stat.value}
                     </div>
                     <p className="text-xs text-gray-500 mt-1">{stat.description}</p>
+                    <div className="mt-2 text-xs text-gray-600">
+                      Total: <span className="font-semibold">{stat.breakdown.total}</span>,{" "}
+                      Indiamart: <span className="font-semibold">{stat.breakdown.indiamart}</span>,{" "}
+                      Pharmavends: <span className="font-semibold">{stat.breakdown.pharmavends}</span>,{" "}
+                      Old Data: <span className="font-semibold">{stat.breakdown.oldData}</span>
+                    </div>
                   </CardContent>
                 </Card>
               </motion.div>

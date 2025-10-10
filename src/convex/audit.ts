@@ -9,6 +9,9 @@ export const getWebhookLogs = query({
   args: {
     paginationOpts: paginationOptsValidator, // { numItems, cursor }
     currentUserId: v.optional(v.id("users")),
+    // New: Optional timestamp range to reduce scanned documents
+    sinceTs: v.optional(v.number()),
+    untilTs: v.optional(v.number()),
   },
   handler: async (ctx, args) => {
     const currentUser = args.currentUserId
@@ -18,56 +21,34 @@ export const getWebhookLogs = query({
       return { items: [], isDone: true, continueCursor: null as string | null };
     }
 
-    // We will accumulate exactly paginationOpts.numItems WEBHOOK_LOG entries by scanning
-    // auditLogs via timestamp index in descending order, stopping early once enough are collected.
-    const desired = Math.max(1, Math.min(args.paginationOpts.numItems, 50)); // hard cap per page
-    let items: Array<any> = [];
-    let cursor: string | null = args.paginationOpts.cursor ?? null;
-    let isDone = false;
+    // Use a selective index to fetch only WEBHOOK_LOG entries, ordered by newest first.
+    const desired = Math.max(1, Math.min(args.paginationOpts.numItems, 50));
 
-    // Scan up to a bounded number of pages per call to avoid read explosions
-    const maxScannedPages = 20;
-    let scanned = 0;
-
-    while (items.length < desired && scanned < maxScannedPages) {
-      const page = await ctx.db
-        .query("auditLogs")
-        .withIndex("timestamp", (q) => q.gt("timestamp", 0))
-        .order("desc")
-        .paginate({ numItems: 200, cursor }); // small internal page to keep reads low
-
-      // Collect only WEBHOOK_LOG entries
-      for (const doc of page.page) {
-        if (doc.action === "WEBHOOK_LOG") {
-          items.push(doc);
-          if (items.length >= desired) break;
+    // Apply optional timestamp range to reduce scanned documents
+    const page = await ctx.db
+      .query("auditLogs")
+      .withIndex("by_action_and_timestamp", (q) => {
+        const base = q.eq("action", "WEBHOOK_LOG");
+        const hasSince = typeof args.sinceTs === "number";
+        const hasUntil = typeof args.untilTs === "number";
+        if (hasSince && hasUntil) {
+          return base.gte("timestamp", args.sinceTs!).lte("timestamp", args.untilTs!);
         }
-      }
+        if (hasSince) {
+          return base.gte("timestamp", args.sinceTs!);
+        }
+        if (hasUntil) {
+          return base.lte("timestamp", args.untilTs!);
+        }
+        return base;
+      })
+      .order("desc")
+      .paginate({ numItems: desired, cursor: args.paginationOpts.cursor ?? null });
 
-      if (items.length >= desired) {
-        // We've gathered enough for this page; set next cursor to continue after this page
-        cursor = page.continueCursor;
-        isDone = page.isDone && items.length < desired;
-        break;
-      }
-
-      // If underlying scan is done, we're done
-      if (page.isDone) {
-        cursor = page.continueCursor;
-        isDone = true;
-        break;
-      }
-
-      // Continue scanning
-      cursor = page.continueCursor;
-      scanned += 1;
-    }
-
-    // Return a simple, cursor-based pagination shape
     return {
-      items,
-      isDone,
-      continueCursor: cursor,
+      items: page.page,
+      isDone: page.isDone,
+      continueCursor: page.continueCursor,
     };
   },
 });
