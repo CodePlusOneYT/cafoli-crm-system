@@ -132,12 +132,30 @@ export const createLeadFromGoogleScript = internalMutation({
             .unique()
         : null);
 
+    // Check if existing lead is marked as not relevant - skip if so
+    if (existing && existing.status === "not_relevant") {
+      return false;
+    }
+
     if (existing) {
-      // Club fields into existing
+      // Club fields into existing with concatenation
       const patch: Record<string, any> = {};
+      let hasChanges = false;
+      
       if (!existing.name && args.name) patch.name = args.name;
-      if (!existing.subject && args.subject) patch.subject = args.subject;
-      if (!existing.message && args.message) patch.message = args.message;
+      
+      // Concatenate subject if different
+      if (args.subject && existing.subject !== args.subject) {
+        patch.subject = existing.subject ? `${existing.subject} & ${args.subject}` : args.subject;
+        hasChanges = true;
+      }
+      
+      // Concatenate message if different
+      if (args.message && existing.message !== args.message) {
+        patch.message = existing.message ? `${existing.message} & ${args.message}` : args.message;
+        hasChanges = true;
+      }
+      
       if (!existing.altEmail && args.altEmail) patch.altEmail = args.altEmail;
       if (!existing.altMobileNo && args.altMobileNo) patch.altMobileNo = args.altMobileNo;
       if (!existing.state && args.state) patch.state = args.state;
@@ -149,20 +167,26 @@ export const createLeadFromGoogleScript = internalMutation({
       if (args.serialNo && !existing.serialNo) patch.serialNo = args.serialNo;
 
       // Assignment rule:
-      // - If incoming has assignee:
-      //    - If existing unassigned -> assign to incoming
-      //    - If existing assigned (different) -> reassign to incoming (prefer incoming)
-      // - Else keep existing as-is
-      if (incomingAssigneeId) {
-        if (!existing.assignedTo) {
-          patch.assignedTo = incomingAssigneeId;
-        } else if (String(existing.assignedTo) !== String(incomingAssigneeId)) {
-          patch.assignedTo = incomingAssigneeId;
-        }
+      // - If existing lead already has an assignee, preserve it (do not reassign)
+      // - If existing lead is unassigned and incoming has assignee, assign it
+      if (incomingAssigneeId && !existing.assignedTo) {
+        patch.assignedTo = incomingAssigneeId;
       }
+      // If existing is already assigned, we keep it as-is (no reassignment)
 
       if (Object.keys(patch).length > 0) {
         await ctx.db.patch(existing._id, patch);
+      }
+
+      // Add comment about duplicate lead posting
+      if (hasChanges) {
+        const loggingUserId = await ensureLoggingUserId(ctx);
+        await ctx.db.insert("comments", {
+          leadId: existing._id,
+          userId: loggingUserId,
+          content: "The Lead was Posted again",
+          timestamp: Date.now(),
+        });
       }
 
       // If it had an assignee before, notify them about clubbing
@@ -176,8 +200,8 @@ export const createLeadFromGoogleScript = internalMutation({
           relatedLeadId: existing._id,
         });
       }
-      // If reassigned to a different user, also notify new assignee
-      if (incomingAssigneeId && String(existing.assignedTo) !== String(incomingAssigneeId)) {
+      // Only notify new assignee if we just assigned (not if already assigned)
+      if (incomingAssigneeId && !existing.assignedTo && patch.assignedTo) {
         await ctx.db.insert("notifications", {
           userId: incomingAssigneeId,
           title: "Lead Assigned",
@@ -270,12 +294,30 @@ export const createLeadFromSource = internalMutation({
             .unique()
         : null);
 
+    // Check if existing lead is marked as not relevant - skip if so
+    if (existing && existing.status === "not_relevant") {
+      return false;
+    }
+
     if (existing) {
-      // Club fields into existing
+      // Club fields into existing with concatenation
       const patch: Record<string, any> = {};
+      let hasChanges = false;
+      
       if (!existing.name && args.name) patch.name = args.name;
-      if (!existing.subject && args.subject) patch.subject = args.subject;
-      if (!existing.message && args.message) patch.message = args.message;
+      
+      // Concatenate subject if different
+      if (args.subject && existing.subject !== args.subject) {
+        patch.subject = existing.subject ? `${existing.subject} & ${args.subject}` : args.subject;
+        hasChanges = true;
+      }
+      
+      // Concatenate message if different
+      if (args.message && existing.message !== args.message) {
+        patch.message = existing.message ? `${existing.message} & ${args.message}` : args.message;
+        hasChanges = true;
+      }
+      
       if (!existing.altMobileNo && args.altMobileNo) patch.altMobileNo = args.altMobileNo;
       if (!existing.altEmail && args.altEmail) patch.altEmail = args.altEmail;
       if (!existing.state && args.state) patch.state = args.state;
@@ -283,6 +325,17 @@ export const createLeadFromSource = internalMutation({
 
       if (Object.keys(patch).length > 0) {
         await ctx.db.patch(existing._id, patch);
+      }
+
+      // Add comment about duplicate lead posting
+      if (hasChanges) {
+        const loggingUserId = await ensureLoggingUserId(ctx);
+        await ctx.db.insert("comments", {
+          leadId: existing._id,
+          userId: loggingUserId,
+          content: "The Lead was Posted again",
+          timestamp: Date.now(),
+        });
       }
 
       // If it had an assignee, notify them

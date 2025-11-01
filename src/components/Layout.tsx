@@ -1,6 +1,6 @@
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Bell, LogOut, FileText, Settings, Upload, UserPlus, Download, PlusCircle, Menu, User, KeyRound } from "lucide-react";
+import { Bell, LogOut, FileText, Settings, Upload, UserPlus, Download, PlusCircle, Menu, User, KeyRound, Send } from "lucide-react";
 import { motion } from "framer-motion";
 import { useCrmAuth } from "@/hooks/use-crm-auth";
 import { useQuery, useMutation } from "convex/react";
@@ -24,20 +24,24 @@ export function Layout({ children }: LayoutProps) {
   const { currentUser, logout, initializeAuth, originalAdmin, returnToAdmin } = useCrmAuth();
   const navigate = useNavigate();
   const location = useLocation();
-  const unreadCount = useQuery(
-    api.notifications.getUnreadCount,
-    currentUser ? { currentUserId: currentUser._id } : "skip"
-  );
+  const [authReady, setAuthReady] = useState(false);
+  
+  // Notifications temporarily disabled to prevent server errors
+  // const unreadCount = useQuery(
+  //   api.notifications.getUnreadCount,
+  //   authReady && currentUser ? { currentUserId: currentUser._id } : "skip"
+  // );
+  const unreadCount = 0; // Disabled
 
   // Add data and mutations early so hooks order is stable even when currentUser is null
   const allLeadsForExport = useQuery(
     api.leads.getAllLeads,
-    currentUser ? { filter: "all", currentUserId: currentUser._id } : "skip"
+    authReady && currentUser ? { filter: "all", currentUserId: currentUser._id } : "skip"
   ) ?? []
   const assignableUsers =
     useQuery(
       api.users.getAssignableUsers,
-      currentUser ? { currentUserId: currentUser._id } : "skip"
+      authReady && currentUser ? { currentUserId: currentUser._id } : "skip"
     ) ?? [];
   const bulkCreateLeads = useMutation(api.leads.bulkCreateLeads);
   const runDeduplication = useMutation(api.leads.runDeduplication);
@@ -47,7 +51,7 @@ export function Layout({ children }: LayoutProps) {
   const myLeadsForAssignSound =
     useQuery(
       api.leads.getMyLeads,
-      currentUser ? { currentUserId: currentUser._id } : "skip"
+      authReady && currentUser ? { currentUserId: currentUser._id } : "skip"
     ) ?? [];
 
   const importInputRef = useRef<HTMLInputElement | null>(null);
@@ -91,7 +95,19 @@ export function Layout({ children }: LayoutProps) {
 
   useEffect(() => {
     initializeAuth();
+    // Small delay to ensure auth is fully initialized
+    const timer = setTimeout(() => {
+      setAuthReady(true);
+    }, 100);
+    return () => clearTimeout(timer);
   }, []); // run once to avoid re-run loops
+
+  // Redirect to login if no user after auth is ready
+  useEffect(() => {
+    if (authReady && !currentUser && location.pathname !== "/") {
+      navigate("/");
+    }
+  }, [authReady, currentUser, location.pathname, navigate]);
 
   // Play sound + toast when new leads arrive (single vs multiple)
   useEffect(() => {
@@ -441,7 +457,13 @@ export function Layout({ children }: LayoutProps) {
     }
   };
 
-  if (!currentUser) {
+  // If auth is ready and no user, don't render Layout (let redirect happen)
+  if (authReady && !currentUser) {
+    return <>{children}</>;
+  }
+
+  // If auth not ready yet, show loading or just children
+  if (!authReady || !currentUser) {
     return <>{children}</>;
   }
 
@@ -461,6 +483,13 @@ export function Layout({ children }: LayoutProps) {
       icon: FileText,
       roles: [ROLES.MANAGER, ROLES.STAFF] 
     },
+    // Temporarily disabled Campaigns
+    // { 
+    //   label: "Campaigns", 
+    //   path: "/campaigns", 
+    //   icon: Send,
+    //   roles: [ROLES.ADMIN, ROLES.MANAGER] 
+    // },
     { 
       label: "Admin Panel", 
       path: "/admin", 
@@ -561,7 +590,8 @@ export function Layout({ children }: LayoutProps) {
                       </Button>
                     )}
                     <div className="flex items-center gap-2">
-                      <Button
+                      {/* Notifications - Temporarily Disabled */}
+                      {/* <Button
                         variant="ghost"
                         className="flex-1"
                         onClick={() => {
@@ -571,10 +601,10 @@ export function Layout({ children }: LayoutProps) {
                       >
                         <Bell className="w-4 h-4 mr-2" />
                         Notifications
-                      </Button>
+                      </Button> */}
                       <Button
                         variant="ghost"
-                        className="flex-1 text-red-600"
+                        className="w-full text-red-600"
                         onClick={() => {
                           setMobileNavOpen(false);
                           logout();
@@ -642,8 +672,8 @@ export function Layout({ children }: LayoutProps) {
                 </Button>
               )}
 
-              {/* Notifications */}
-              <Button
+              {/* Notifications - Temporarily Disabled */}
+              {/* <Button
                 variant="ghost"
                 size="icon"
                 className="relative"
@@ -659,7 +689,7 @@ export function Layout({ children }: LayoutProps) {
                     {unreadCount}
                   </Badge>
                 )}
-              </Button>
+              </Button> */}
 
               {/* Import/Export (Admin only, desktop already) */}
               {isAdmin && (

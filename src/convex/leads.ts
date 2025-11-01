@@ -219,11 +219,24 @@ export const createLead = mutation({
     const existing = await findDuplicateLead(ctx, args.mobileNo, args.email);
 
     if (existing) {
-      // Club records: patch any missing/empty fields on the existing doc
+      // Club records: concatenate different info and patch missing fields
       const patch: Record<string, any> = {};
+      let hasChanges = false;
+      
       if (!existing.name && args.name) patch.name = args.name;
-      if (!existing.subject && args.subject) patch.subject = args.subject;
-      if (!existing.message && args.message) patch.message = args.message;
+      
+      // Concatenate subject if different
+      if (args.subject && existing.subject !== args.subject) {
+        patch.subject = existing.subject ? `${existing.subject} & ${args.subject}` : args.subject;
+        hasChanges = true;
+      }
+      
+      // Concatenate message if different
+      if (args.message && existing.message !== args.message) {
+        patch.message = existing.message ? `${existing.message} & ${args.message}` : args.message;
+        hasChanges = true;
+      }
+      
       if (!existing.altMobileNo && args.altMobileNo) patch.altMobileNo = args.altMobileNo;
       if (!existing.altEmail && args.altEmail) patch.altEmail = args.altEmail;
       if (!existing.state && args.state) patch.state = args.state;
@@ -233,31 +246,42 @@ export const createLead = mutation({
         await ctx.db.patch(existing._id, patch);
       }
 
-      // If existing is already assigned, notify assignee about the clubbed lead
-      if (existing.assignedTo) {
-        await ctx.db.insert("notifications", {
-          userId: existing.assignedTo,
-          title: "Duplicate Lead Clubbed",
-          message: `A new lead matching ${existing.name || existing.mobileNo || existing.email} was clubbed into your assigned lead.`,
-          read: false,
-          type: "lead_assigned",
+      // Add comment about duplicate lead posting
+      if (hasChanges) {
+        let anyUserId: any = null;
+        const anyUsers = await ctx.db.query("users").collect();
+        if (anyUsers.length > 0) {
+          anyUserId = anyUsers[0]._id;
+        }
+        
+        await ctx.db.insert("comments", {
+          leadId: existing._id,
+          userId: anyUserId,
+          content: "The Lead was Posted again",
+          timestamp: Date.now(),
+        });
+
+        // If existing is already assigned, notify assignee about the clubbed lead
+        if (existing.assignedTo) {
+          await ctx.db.insert("notifications", {
+            userId: existing.assignedTo,
+            title: "Duplicate Lead Clubbed",
+            message: `A new lead matching ${existing.name || existing.mobileNo || existing.email} was clubbed into your assigned lead.`,
+            read: false,
+            type: "lead_assigned",
+            relatedLeadId: existing._id,
+          });
+        }
+
+        // Audit log the clubbing
+        await ctx.db.insert("auditLogs", {
+          userId: anyUserId,
+          action: "CLUB_DUPLICATE_LEAD",
+          details: `Clubbed new lead into existing lead ${existing._id}`,
+          timestamp: Date.now(),
           relatedLeadId: existing._id,
         });
       }
-
-      // Audit log the clubbing (replace .first() with a safe lookup)
-      let anyUserId: any = null;
-      const anyUsers = await ctx.db.query("users").collect();
-      if (anyUsers.length > 0) {
-        anyUserId = anyUsers[0]._id;
-      }
-      await ctx.db.insert("auditLogs", {
-        userId: anyUserId,
-        action: "CLUB_DUPLICATE_LEAD",
-        details: `Clubbed new lead into existing lead ${existing._id}`,
-        timestamp: Date.now(),
-        relatedLeadId: existing._id,
-      });
 
       return existing._id;
     }
@@ -573,11 +597,24 @@ export const bulkCreateLeads = mutation({
       const existing = await findDuplicateLead(ctx, incoming.mobileNo, incoming.email);
 
       if (existing) {
-        // Club records: fill missing/empty fields from incoming
+        // Club records: concatenate different info and fill missing fields
         const patch: Record<string, any> = {};
+        let hasChanges = false;
+        
         if (!existing.name && incoming.name) patch.name = incoming.name;
-        if (!existing.subject && incoming.subject) patch.subject = incoming.subject;
-        if (!existing.message && incoming.message) patch.message = incoming.message;
+        
+        // Concatenate subject if different
+        if (incoming.subject && existing.subject !== incoming.subject) {
+          patch.subject = existing.subject ? `${existing.subject} & ${incoming.subject}` : incoming.subject;
+          hasChanges = true;
+        }
+        
+        // Concatenate message if different
+        if (incoming.message && existing.message !== incoming.message) {
+          patch.message = existing.message ? `${existing.message} & ${incoming.message}` : incoming.message;
+          hasChanges = true;
+        }
+        
         if (!existing.altMobileNo && incoming.altMobileNo) patch.altMobileNo = incoming.altMobileNo;
         if (!existing.altEmail && incoming.altEmail) patch.altEmail = incoming.altEmail;
         if (!existing.state && finalState) patch.state = finalState;
@@ -589,23 +626,27 @@ export const bulkCreateLeads = mutation({
         if (!existing.agencyName && incoming.agencyName) patch.agencyName = incoming.agencyName;
 
         // Assignment logic (updated):
-        // - If args.assignedTo provided:
-        //    - If existing unassigned -> assign to args.assignedTo
-        //    - If existing assigned (different) -> reassign to args.assignedTo (prefer incoming group)
+        // - If existing lead already has an assignee, preserve it (do not reassign)
+        // - If existing lead is unassigned and args.assignedTo is provided, assign it
         let assignedJustNow = false;
-        let assignmentChanged = false;
-        if (args.assignedTo) {
-          if (!existing.assignedTo) {
-            patch.assignedTo = args.assignedTo;
-            assignedJustNow = true;
-          } else if (String(existing.assignedTo) !== String(args.assignedTo)) {
-            patch.assignedTo = args.assignedTo;
-            assignmentChanged = true;
-          }
+        if (args.assignedTo && !existing.assignedTo) {
+          patch.assignedTo = args.assignedTo;
+          assignedJustNow = true;
         }
+        // If existing is already assigned, we keep it as-is (no reassignment)
 
         if (Object.keys(patch).length > 0) {
           await ctx.db.patch(existing._id, patch);
+        }
+
+        // Add comment about duplicate lead posting
+        if (hasChanges) {
+          await ctx.db.insert("comments", {
+            leadId: existing._id,
+            userId: currentUser._id,
+            content: "The Lead was Posted again",
+            timestamp: Date.now(),
+          });
         }
 
         if (existing.assignedTo) {
@@ -618,12 +659,12 @@ export const bulkCreateLeads = mutation({
             relatedLeadId: existing._id,
           });
         }
-        // Notify new assignee in both assign and reassign cases
-        if ((assignedJustNow || assignmentChanged) && args.assignedTo) {
+        // Notify new assignee only if we just assigned (not reassigned)
+        if (assignedJustNow && args.assignedTo) {
           await ctx.db.insert("notifications", {
             userId: args.assignedTo,
             title: "Lead Assigned",
-            message: `A lead was ${assignmentChanged ? "reassigned" : "assigned"} to you via import.`,
+            message: `A lead was assigned to you via import.`,
             read: false,
             type: "lead_assigned",
             relatedLeadId: existing._id,
@@ -713,17 +754,19 @@ export const runDeduplication = mutation({
       throw new Error("Unauthorized");
     }
 
-    // Load all leads
+    // Load only unassigned leads for deduplication
     const all = await ctx.db.query("leads").collect();
-    if (all.length === 0) {
+    const unassignedLeads = all.filter(lead => !lead.assignedTo);
+    
+    if (unassignedLeads.length === 0) {
       return { groupsProcessed: 0, mergedCount: 0, deletedCount: 0, notificationsSent: 0 };
     }
 
-    // Build groups by mobileNo and email
-    type Group = { key: string; members: typeof all };
-    const byKey: Record<string, Array<typeof all[number]>> = {};
+    // Build groups by mobileNo and email (only for unassigned leads)
+    type Group = { key: string; members: typeof unassignedLeads };
+    const byKey: Record<string, Array<typeof unassignedLeads[number]>> = {};
 
-    for (const l of all) {
+    for (const l of unassignedLeads) {
       const keys: Array<string> = [];
       if (l.mobileNo) keys.push(`m:${l.mobileNo}`);
       if (l.email) keys.push(`e:${l.email}`);
@@ -742,7 +785,7 @@ export const runDeduplication = mutation({
     let notificationsSent = 0;
 
     // Helper to club members into a single canonical doc (oldest by _creationTime)
-    const clubGroup = async (members: Array<typeof all[number]>) => {
+    const clubGroup = async (members: Array<typeof unassignedLeads[number]>) => {
       // Filter out already processed docs
       const fresh = members.filter(m => !visitedDocIds.has(String(m._id)));
       if (fresh.length <= 1) {
@@ -755,12 +798,30 @@ export const runDeduplication = mutation({
       const primary = fresh[0];
       const rest = fresh.slice(1);
 
-      // Build patch by filling missing fields
+      // Build patch by concatenating name/subject/message and filling missing fields
       const patch: Record<string, any> = {};
+      let hasChanges = false;
+      
       for (const r of rest) {
-        if (!primary.name && r.name) patch.name = r.name;
-        if (!primary.subject && r.subject) patch.subject = r.subject;
-        if (!primary.message && r.message) patch.message = r.message;
+        // Concatenate name if different
+        if (r.name && primary.name !== r.name) {
+          patch.name = primary.name ? `${primary.name} & ${r.name}` : r.name;
+          hasChanges = true;
+        }
+        
+        // Concatenate subject if different
+        if (r.subject && primary.subject !== r.subject) {
+          patch.subject = primary.subject ? `${primary.subject} & ${r.subject}` : r.subject;
+          hasChanges = true;
+        }
+        
+        // Concatenate message if different
+        if (r.message && primary.message !== r.message) {
+          patch.message = primary.message ? `${primary.message} & ${r.message}` : r.message;
+          hasChanges = true;
+        }
+        
+        // Fill missing fields only
         if (!primary.altMobileNo && r.altMobileNo) patch.altMobileNo = r.altMobileNo;
         if (!primary.altEmail && r.altEmail) patch.altEmail = r.altEmail;
         if (!primary.state && r.state) patch.state = r.state;
@@ -794,6 +855,16 @@ export const runDeduplication = mutation({
       if (Object.keys(patch).length > 0) {
         await ctx.db.patch(primary._id, patch);
         mergedCount++;
+      }
+      
+      // Add "Duplicate leads, Clubbed" comment if fields were concatenated
+      if (hasChanges) {
+        await ctx.db.insert("comments", {
+          leadId: primary._id,
+          userId: currentUser._id,
+          content: "Duplicate leads, Clubbed",
+          timestamp: Date.now(),
+        });
       }
 
       // Notify the assignee if there is one
