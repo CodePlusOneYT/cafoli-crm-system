@@ -2,7 +2,6 @@
 
 import { v } from "convex/values";
 import { internalAction } from "./_generated/server";
-import { internal } from "./_generated/api";
 import { exec } from "child_process";
 import { promisify } from "util";
 import fs from "fs/promises";
@@ -16,7 +15,7 @@ export const exportData = internalAction({
     deployment: v.string(),
     includeFileStorage: v.optional(v.boolean()),
   },
-  handler: async (ctx, args) => {
+  handler: async (_ctx, args) => {
     try {
       const timestamp = Date.now();
       const filename = `export-${args.deployment}-${timestamp}.zip`;
@@ -68,7 +67,7 @@ export const importData = internalAction({
     filename: v.string(),
     replaceAll: v.optional(v.boolean()),
   },
-  handler: async (ctx, args) => {
+  handler: async (_ctx, args) => {
     try {
       const timestamp = Date.now();
       const filepath = path.join("/tmp", `import-${timestamp}-${args.filename}`);

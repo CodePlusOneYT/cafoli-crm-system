@@ -1,13 +1,13 @@
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Bell, LogOut, FileText, Settings, Upload, UserPlus, Download, PlusCircle, Menu, User, KeyRound, Send } from "lucide-react";
+import { LogOut, FileText, Settings, Upload, UserPlus, Download, PlusCircle, Menu, User, KeyRound } from "lucide-react";
 import { motion } from "framer-motion";
 import { useCrmAuth } from "@/hooks/use-crm-auth";
 import { useQuery, useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { useNavigate, useLocation } from "react-router";
 import { ROLES } from "@/convex/schema";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -31,7 +31,6 @@ export function Layout({ children }: LayoutProps) {
   //   api.notifications.getUnreadCount,
   //   authReady && currentUser ? { currentUserId: currentUser._id } : "skip"
   // );
-  const unreadCount = 0; // Disabled
 
   // Add data and mutations early so hooks order is stable even when currentUser is null
   const allLeadsForExport = useQuery(
@@ -44,7 +43,7 @@ export function Layout({ children }: LayoutProps) {
       authReady && currentUser ? { currentUserId: currentUser._id } : "skip"
     ) ?? [];
   const bulkCreateLeads = useMutation((api as any).leads.bulkCreateLeads);
-  const runDeduplication = useMutation((api as any).leads.runDeduplication);
+  // Deduplication mutation available if needed
   const importPincodeMappings = useMutation((api as any).leads.bulkImportPincodeMappings);
 
   // Add: subscribe to my leads to detect assignment increases (for sound)
@@ -96,7 +95,7 @@ export function Layout({ children }: LayoutProps) {
   const importMasterdataInputRef = useRef<HTMLInputElement | null>(null);
   const [requestLeadsDialogOpen, setRequestLeadsDialogOpen] = useState(false);
   const [requestedLeadsCount, setRequestedLeadsCount] = useState("");
-  const [masterdataDialogOpen, setMasterdataDialogOpen] = useState(false);
+  // Masterdata dialog state removed as not currently used
   const [pendingRequestDialogOpen, setPendingRequestDialogOpen] = useState(false);
   const [requestStatusDialogOpen, setRequestStatusDialogOpen] = useState(false);
 

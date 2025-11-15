@@ -224,7 +224,7 @@ export const createLeadFromGoogleScript = internalMutation({
     }
 
     // Insert new lead with optional assignment
-    const leadId = await ctx.db.insert("leads", {
+      await ctx.db.insert("leads", {
       serialNo: args.serialNo,
       source: args.source || "google_script",
       name: args.name,
@@ -362,7 +362,7 @@ export const createLeadFromSource = internalMutation({
     }
 
     // Insert new lead (store placeholder email as-is or leave empty if you prefer)
-    const leadId = await ctx.db.insert("leads", {
+    await ctx.db.insert("leads", {
       name: args.name,
       subject: args.subject,
       message: args.message,
