@@ -65,14 +65,15 @@ export const insertLog = internalMutation({
 // Add phone normalization helper at the top after imports
 function normalizePhoneNumber(phone: string): string {
   if (!phone) return "";
-  // Remove all non-digit characters
+  // Remove all non-digit characters (including +, -, spaces, etc.)
   let digits = phone.replace(/\D/g, "");
-  // Remove country code (91 for India) if present
-  if (digits.startsWith("91") && digits.length > 10) {
-    digits = digits.slice(2);
+  // Remove any country code prefix (1-3 digits) if the number is longer than 10 digits
+  // This handles +91-, +1-, +44-, etc.
+  if (digits.length > 10) {
+    // Take only the last 10 digits (standard mobile number length)
+    digits = digits.slice(-10);
   }
-  // Return last 10 digits to handle any remaining prefixes
-  return digits.slice(-10);
+  return digits;
 }
 
 // Create a lead from Google Script data with new column structure
@@ -258,6 +259,20 @@ export const createLeadFromGoogleScript = internalMutation({
       // Do not block lead creation on email errors
     }
 
+    // NEW: Send WhatsApp welcome template message if mobile number is valid
+    try {
+      if (mobile && mobile.length === 10) {
+        await ctx.scheduler.runAfter(0, (internal as any).whatsapp.sendTemplateMessage, {
+          phoneNumber: mobile,
+          templateName: "cafoliwelcomemessage",
+          languageCode: "en",
+          leadId: undefined,
+        });
+      }
+    } catch {
+      // Do not block lead creation on WhatsApp errors
+    }
+
     return true;
   },
 });
@@ -386,6 +401,20 @@ export const createLeadFromSource = internalMutation({
       }
     } catch {
       // Do not block lead creation on email errors
+    }
+
+    // NEW: Send WhatsApp welcome template message if mobile number is valid
+    try {
+      if (mobile && mobile.length === 10) {
+        await ctx.scheduler.runAfter(0, (internal as any).whatsapp.sendTemplateMessage, {
+          phoneNumber: mobile,
+          templateName: "cafoliwelcomemessage",
+          languageCode: "en",
+          leadId: undefined,
+        });
+      }
+    } catch {
+      // Do not block lead creation on WhatsApp errors
     }
 
     return true;
