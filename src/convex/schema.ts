@@ -101,6 +101,7 @@ export default defineSchema({
     pincode: v.optional(v.string()),
     agencyName: v.optional(v.string()),
     heat: v.optional(v.string()),
+    lastActivityTime: v.optional(v.number()),
   })
     .index("email", ["email"])
     .index("by_status", ["status"])
@@ -119,7 +120,8 @@ export default defineSchema({
     metadata: v.optional(v.any()),
   })
     .index("by_leadId", ["leadId"])
-    .index("by_phoneNumber", ["phoneNumber"]),
+    .index("by_phoneNumber", ["phoneNumber"])
+    .index("by_messageId", ["messageId"]),
 
   masterdata: defineTable({
     name: v.string(),
