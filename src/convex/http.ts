@@ -246,6 +246,22 @@ http.route({
                 const messageType = message.type;
                 const messageId = message.id;
 
+                // Handle reactions specifically
+                if (messageType === "reaction") {
+                  const reaction = message.reaction;
+                  const targetMessageId = reaction.message_id;
+                  const emoji = reaction.emoji || ""; // Empty string means remove reaction usually, but we'll just store what we get
+
+                  await ctx.runMutation((internal as any).webhook.handleWhatsAppReaction, {
+                    messageId: targetMessageId,
+                    reaction: emoji,
+                    phoneNumber,
+                  });
+                  
+                  // Skip storing this as a new message
+                  continue;
+                }
+
                 let messageText = "";
 
                 if (messageType === "text") {
@@ -263,12 +279,24 @@ http.route({
                   messageText = `[${messageType}]`;
                 }
 
+                // Extract reply context if present
+                const context = message.context;
+                let replyToMessageId = undefined;
+                let replyToSender = undefined;
+
+                if (context) {
+                  replyToMessageId = context.id;
+                  replyToSender = context.from;
+                }
+
                 // Store the incoming message
                 await ctx.runMutation((internal as any).webhook.storeWhatsAppMessage, {
                   phoneNumber,
                   message: messageText,
                   messageId,
                   metadata: message,
+                  replyToMessageId,
+                  replyToSender,
                 });
               }
 

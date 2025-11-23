@@ -197,6 +197,7 @@ export const sendMessage = action({
     phoneNumber: v.string(),
     message: v.string(),
     leadId: v.optional(v.id("leads")),
+    replyToMessageId: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
     const token = process.env.WHATSAPP_ACCESS_TOKEN;
@@ -211,6 +212,23 @@ export const sendMessage = action({
     const normalizedPhone = normalizePhoneNumber(args.phoneNumber);
 
     try {
+      const payload: any = {
+        messaging_product: "whatsapp",
+        recipient_type: "individual",
+        to: normalizedPhone,
+        type: "text",
+        text: {
+          preview_url: true,
+          body: args.message,
+        },
+      };
+
+      if (args.replyToMessageId) {
+        payload.context = {
+          message_id: args.replyToMessageId,
+        };
+      }
+
       const response = await fetch(
         `https://graph.facebook.com/${version}/${phoneId}/messages`,
         {
@@ -219,16 +237,7 @@ export const sendMessage = action({
             Authorization: `Bearer ${token}`,
             "Content-Type": "application/json",
           },
-          body: JSON.stringify({
-            messaging_product: "whatsapp",
-            recipient_type: "individual",
-            to: normalizedPhone,
-            type: "text",
-            text: {
-              preview_url: true,
-              body: args.message,
-            },
-          }),
+          body: JSON.stringify(payload),
         }
       );
 
@@ -240,6 +249,10 @@ export const sendMessage = action({
 
       // Log the sent message and update lastActivityTime
       if (args.leadId) {
+        // If replying, try to find the original message to get body/sender for local log
+        // Note: We can't easily query DB here since this is an action. 
+        // We'll just log the ID. The UI can resolve it if needed or we can pass it in args if we want to be fancy.
+        
         await ctx.runMutation(internal.whatsappQueries.logMessage, {
           leadId: args.leadId,
           phoneNumber: normalizedPhone,
@@ -247,6 +260,7 @@ export const sendMessage = action({
           direction: "outbound",
           messageId: data.messages?.[0]?.id || null,
           status: "sent",
+          replyToMessageId: args.replyToMessageId,
         });
         
         // Update lastActivityTime for outbound messages
@@ -431,6 +445,75 @@ export const uploadMedia = action({
       return { success: true, mediaId: data.id };
     } catch (error: any) {
       throw new Error(`Failed to upload media: ${error.message}`);
+    }
+  },
+});
+
+// Send a reaction to a message
+export const sendReaction = action({
+  args: {
+    phoneNumber: v.string(),
+    messageId: v.string(),
+    emoji: v.string(),
+    leadId: v.optional(v.id("leads")),
+  },
+  handler: async (ctx, args) => {
+    const token = process.env.WHATSAPP_ACCESS_TOKEN;
+    const phoneId = process.env.WA_PHONE_NUMBER_ID;
+    const version = process.env.CLOUD_API_VERSION || "v21.0";
+
+    if (!token || !phoneId) {
+      throw new Error("WhatsApp credentials not configured");
+    }
+
+    const normalizedPhone = normalizePhoneNumber(args.phoneNumber);
+
+    try {
+      const response = await fetch(
+        `https://graph.facebook.com/${version}/${phoneId}/messages`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            messaging_product: "whatsapp",
+            recipient_type: "individual",
+            to: normalizedPhone,
+            type: "reaction",
+            reaction: {
+              message_id: args.messageId,
+              emoji: args.emoji,
+            },
+          }),
+        }
+      );
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(`WhatsApp API error: ${JSON.stringify(data)}`);
+      }
+
+      // Update the message in the database
+      // We use a separate internal mutation for this to keep logic consistent
+      // But since we can't call internal mutation from here easily without exposing another one,
+      // we'll reuse the webhook handler or create a specific one. 
+      // Actually, we can call the webhook handler internal mutation if we import it.
+      // But better to have a dedicated update function.
+      // For now, let's use the webhook handler as it does exactly what we want: updates reactions.
+      // We pass a dummy phone number that is NOT the lead's phone number to indicate "outbound"
+      
+      await ctx.runMutation(internal.webhook.handleWhatsAppReaction, {
+        messageId: args.messageId,
+        reaction: args.emoji,
+        phoneNumber: "CRM_USER", // This ensures it's treated as "outbound" in our logic
+      });
+
+      return { success: true, data };
+    } catch (error: any) {
+      throw new Error(`Failed to send reaction: ${error.message}`);
     }
   },
 });

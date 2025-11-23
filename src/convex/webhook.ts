@@ -608,10 +608,30 @@ export const storeWhatsAppMessage = internalMutation({
     mediaId: v.optional(v.string()),
     mimeType: v.optional(v.string()),
     caption: v.optional(v.string()),
+    replyToMessageId: v.optional(v.string()),
+    replyToBody: v.optional(v.string()),
+    replyToSender: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
     // Normalize phone number using the shared helper
     const normalizedPhone = normalizePhoneNumber(args.phoneNumber);
+
+    // Resolve reply context if ID is present but body is missing
+    let replyToBody = args.replyToBody;
+    let replyToSender = args.replyToSender;
+
+    if (args.replyToMessageId && !replyToBody) {
+      const originalMsg = await ctx.db
+        .query("whatsappMessages")
+        .withIndex("by_messageId", (q: any) => q.eq("messageId", args.replyToMessageId))
+        .unique();
+      
+      if (originalMsg) {
+        replyToBody = originalMsg.message;
+        // If sender wasn't provided (it usually is in webhook context.from, but good to have fallback)
+        if (!replyToSender) replyToSender = originalMsg.phoneNumber; 
+      }
+    }
 
     // Try to find matching lead by phone number
     const allLeads = await ctx.db.query("leads").collect();
@@ -692,6 +712,9 @@ export const storeWhatsAppMessage = internalMutation({
       mediaId: args.mediaId,
       mimeType: args.mimeType,
       caption: args.caption,
+      replyToMessageId: args.replyToMessageId,
+      replyToBody: replyToBody,
+      replyToSender: replyToSender,
     });
 
     // Update lastActivityTime for the lead
@@ -737,6 +760,55 @@ export const updateWhatsAppMessageStatus = internalMutation({
         status: args.status,
         metadata: { ...message.metadata, ...args.metadata },
       });
+    }
+  },
+});
+
+// Add: Handle WhatsApp reaction events
+export const handleWhatsAppReaction = internalMutation({
+  args: {
+    messageId: v.string(),
+    reaction: v.string(), // The emoji
+    phoneNumber: v.string(), // Who reacted
+  },
+  handler: async (ctx, args) => {
+    // Find the message being reacted to
+    const message = await ctx.db
+      .query("whatsappMessages")
+      .withIndex("by_messageId", (q) => q.eq("messageId", args.messageId))
+      .unique();
+
+    if (message) {
+      // Determine direction of reaction based on who reacted
+      // If the phoneNumber matches the message's phoneNumber (the lead), it's inbound
+      // Otherwise it's likely us (outbound) - though usually webhooks for our own reactions come differently
+      // For now, assume webhook reactions with phoneNumber matching the lead are "inbound"
+      
+      const isFromLead = args.phoneNumber === message.phoneNumber;
+      const from = isFromLead ? "inbound" : "outbound";
+
+      let currentReactions = message.reactions || [];
+      
+      // Remove existing reaction from this side if exists
+      currentReactions = currentReactions.filter(r => r.from !== from);
+
+      // If reaction is not empty (empty string means remove reaction), add it
+      if (args.reaction) {
+        currentReactions.push({
+          from,
+          emoji: args.reaction,
+          timestamp: Date.now()
+        });
+      }
+
+      await ctx.db.patch(message._id, {
+        reactions: currentReactions,
+        // Keep legacy field updated with the latest reaction for backward compat if needed, 
+        // or just the lead's reaction
+        reaction: args.reaction || undefined 
+      });
+    } else {
+      console.log(`[WhatsApp] Received reaction for unknown message: ${args.messageId}`);
     }
   },
 });

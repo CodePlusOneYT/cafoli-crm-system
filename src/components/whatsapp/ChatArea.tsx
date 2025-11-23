@@ -1,7 +1,11 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Send, MessageSquare, Check, CheckCheck, Paperclip, Image, Video, FileText, Music } from "lucide-react";
+import { Textarea } from "@/components/ui/textarea";
+import { Send, MessageSquare, Check, CheckCheck, Paperclip, Image, Video, FileText, Music, Smile, Reply, X } from "lucide-react";
+import { useState, useEffect } from "react";
+import EmojiPicker, { EmojiClickData } from 'emoji-picker-react';
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 
 interface ChatAreaProps {
   selectedLeadId: string | null;
@@ -12,15 +16,18 @@ interface ChatAreaProps {
   handleSendMessage: () => void;
   handleSendWelcomeMessage: () => void;
   isMessagingAllowed: boolean;
-  selectedFile: File | null;
-  setSelectedFile: (file: File | null) => void;
+  selectedFiles: File[];
+  handleRemoveFile: (index: number) => void;
   caption: string;
   setCaption: (val: string) => void;
   isUploading: boolean;
   handleFileSelect: (e: React.ChangeEvent<HTMLInputElement>) => void;
   handleSendMedia: () => void;
+  handleSendReaction: (messageId: string, emoji: string) => void;
   fileInputRef: React.RefObject<HTMLInputElement>;
   messagesEndRef: React.RefObject<HTMLDivElement>;
+  replyingTo: any | null;
+  setReplyingTo: (msg: any | null) => void;
 }
 
 export function ChatArea({
@@ -32,16 +39,32 @@ export function ChatArea({
   handleSendMessage,
   handleSendWelcomeMessage,
   isMessagingAllowed,
-  selectedFile,
-  setSelectedFile,
+  selectedFiles,
+  handleRemoveFile,
   caption,
   setCaption,
   isUploading,
   handleFileSelect,
   handleSendMedia,
+  handleSendReaction,
   fileInputRef,
   messagesEndRef,
+  replyingTo,
+  setReplyingTo,
 }: ChatAreaProps) {
+  const [reactingTo, setReactingTo] = useState<string | null>(null);
+  const [showEmojiPicker, setShowEmojiPicker] = useState(false);
+
+  // Close reaction picker when clicking outside
+  useEffect(() => {
+    const handleClickOutside = () => setReactingTo(null);
+    if (reactingTo) {
+      document.addEventListener('click', handleClickOutside);
+    }
+    return () => {
+      document.removeEventListener('click', handleClickOutside);
+    };
+  }, [reactingTo]);
   
   const renderReadReceipt = (status: string | undefined) => {
     if (!status || status === "sent") {
@@ -104,6 +127,16 @@ export function ChatArea({
     return null;
   };
 
+  const onEmojiClick = (emojiData: EmojiClickData) => {
+    setMessageInput(messageInput + emojiData.emoji);
+    setShowEmojiPicker(false);
+  };
+
+  const onReactionEmojiClick = (emojiData: EmojiClickData, messageId: string) => {
+    handleSendReaction(messageId, emojiData.emoji);
+    setReactingTo(null);
+  };
+
   if (!selectedLeadId) {
     return (
       <Card className="md:col-span-2 flex flex-col overflow-hidden bg-gray-50 h-full">
@@ -151,16 +184,30 @@ export function ChatArea({
             messages.map((msg: any) => (
               <div
                 key={msg._id}
-                className={`flex ${msg.direction === "outbound" ? "justify-end" : "justify-start"}`}
+                className={`flex ${msg.direction === "outbound" ? "justify-end" : "justify-start"} group relative`}
               >
                 <div
                   className={`max-w-[70%] rounded-lg px-3 py-2 shadow-sm ${
                     msg.direction === "outbound"
                       ? "bg-[#dcf8c6]"
                       : "bg-white"
-                  }`}
+                  } relative mb-4`}
                 >
-                  <div className="text-sm break-words text-gray-900">{String(msg.message)}</div>
+                  {/* Reply Context Display */}
+                  {msg.replyToMessageId && (
+                    <div className={`mb-2 p-2 rounded border-l-4 text-xs ${
+                      msg.direction === "outbound" ? "bg-[#cfe9ba] border-[#a6c98c]" : "bg-gray-100 border-gray-300"
+                    }`}>
+                      <div className="font-semibold text-gray-600 mb-0.5">
+                        {msg.replyToSender === lead?.mobileNo ? lead?.name || lead?.mobileNo : "You"}
+                      </div>
+                      <div className="truncate text-gray-500">
+                        {msg.replyToBody || "Original message"}
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="text-sm break-words text-gray-900 whitespace-pre-wrap">{String(msg.message)}</div>
                   {renderMediaMessage(msg)}
                   <div className="flex items-center justify-end gap-1 mt-1">
                     <span className="text-[10px] text-gray-500">
@@ -175,6 +222,67 @@ export function ChatArea({
                       </span>
                     )}
                   </div>
+                  
+                  {/* Reaction Display */}
+                  {(msg.reactions && msg.reactions.length > 0) || msg.reaction ? (
+                    <div className="absolute -bottom-3 right-0 flex gap-1 z-10">
+                      {/* Legacy support */}
+                      {msg.reaction && !msg.reactions && (
+                        <div className="bg-white rounded-full p-0.5 shadow-md border border-gray-100 text-xs">
+                          {msg.reaction}
+                        </div>
+                      )}
+                      {/* New reactions array support */}
+                      {msg.reactions?.map((r: any, idx: number) => (
+                        <div key={idx} className="bg-white rounded-full p-0.5 shadow-md border border-gray-100 text-xs" title={r.from === 'outbound' ? 'You' : 'Lead'}>
+                          {r.emoji}
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
+
+                  {/* Message Actions (Reply & React) */}
+                  {msg.messageId && (
+                    <div className={`absolute top-0 ${msg.direction === "outbound" ? "-left-16" : "-right-16"} flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity`}>
+                      <button
+                        className="p-1 text-gray-400 hover:text-gray-600 bg-white/50 rounded-full hover:bg-white"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setReplyingTo(msg);
+                        }}
+                        title="Reply"
+                      >
+                        <Reply className="h-4 w-4" />
+                      </button>
+                      <button
+                        className="p-1 text-gray-400 hover:text-gray-600 bg-white/50 rounded-full hover:bg-white"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setReactingTo(reactingTo === msg._id ? null : msg._id);
+                        }}
+                        title="React"
+                      >
+                        <Smile className="h-4 w-4" />
+                      </button>
+                    </div>
+                  )}
+
+                  {/* Emoji Picker for Reactions */}
+                  {reactingTo === msg._id && (
+                    <div 
+                      className={`absolute top-8 ${msg.direction === "outbound" ? "right-0" : "left-0"} z-50`}
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <div className="bg-white shadow-xl rounded-lg border border-gray-200">
+                        <EmojiPicker 
+                          onEmojiClick={(data: EmojiClickData) => onReactionEmojiClick(data, msg.messageId)}
+                          width={300}
+                          height={350}
+                          previewConfig={{ showPreview: false }}
+                        />
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
             ))
@@ -188,42 +296,71 @@ export function ChatArea({
             ⚠️ Messaging disabled: Lead hasn't sent a message in the last 24 hours
           </div>
         )}
-        
-        {/* File preview */}
-        {selectedFile && (
-          <div className="mb-2 p-2 bg-gray-100 rounded flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              {selectedFile.type.startsWith("image/") && <Image className="h-4 w-4" />}
-              {selectedFile.type.startsWith("video/") && <Video className="h-4 w-4" />}
-              {selectedFile.type.startsWith("audio/") && <Music className="h-4 w-4" />}
-              {!selectedFile.type.startsWith("image/") && !selectedFile.type.startsWith("video/") && !selectedFile.type.startsWith("audio/") && <FileText className="h-4 w-4" />}
-              <span className="text-sm">{selectedFile.name}</span>
+
+        {/* Reply Preview Banner */}
+        {replyingTo && (
+          <div className="mb-2 p-2 bg-gray-100 rounded border-l-4 border-blue-500 flex justify-between items-center">
+            <div className="overflow-hidden">
+              <div className="text-xs font-bold text-blue-600 mb-0.5">
+                Replying to {replyingTo.direction === "outbound" ? "You" : (lead?.name || lead?.mobileNo)}
+              </div>
+              <div className="text-sm text-gray-600 truncate">
+                {replyingTo.message}
+              </div>
             </div>
             <Button
               variant="ghost"
               size="sm"
-              onClick={() => setSelectedFile(null)}
+              className="h-6 w-6 p-0 hover:bg-gray-200 rounded-full"
+              onClick={() => setReplyingTo(null)}
             >
-              ✕
+              <X className="h-4 w-4" />
             </Button>
           </div>
         )}
         
+        {/* File preview */}
+        {selectedFiles.length > 0 && (
+          <div className="mb-2 p-2 bg-gray-100 rounded space-y-2 max-h-40 overflow-y-auto">
+            {selectedFiles.map((file, index) => (
+              <div key={index} className="flex items-center justify-between bg-white p-2 rounded border shadow-sm">
+                <div className="flex items-center gap-2 overflow-hidden">
+                  {file.type.startsWith("image/") && <Image className="h-4 w-4 flex-shrink-0 text-blue-500" />}
+                  {file.type.startsWith("video/") && <Video className="h-4 w-4 flex-shrink-0 text-purple-500" />}
+                  {file.type.startsWith("audio/") && <Music className="h-4 w-4 flex-shrink-0 text-green-500" />}
+                  {!file.type.startsWith("image/") && !file.type.startsWith("video/") && !file.type.startsWith("audio/") && <FileText className="h-4 w-4 flex-shrink-0 text-gray-500" />}
+                  <span className="text-sm truncate max-w-[200px]">{file.name}</span>
+                  <span className="text-xs text-gray-400">({(file.size / 1024).toFixed(0)} KB)</span>
+                </div>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-6 w-6 p-0 hover:bg-red-100 hover:text-red-600 rounded-full"
+                  onClick={() => handleRemoveFile(index)}
+                >
+                  ✕
+                </Button>
+              </div>
+            ))}
+          </div>
+        )}
+        
         {/* Caption input for media */}
-        {selectedFile && (
+        {selectedFiles.length > 0 && (
           <Input
-            placeholder="Add a caption (optional)..."
+            placeholder="Add a caption (sent with first file)..."
             value={caption}
             onChange={(e) => setCaption(e.target.value)}
             className="mb-2 bg-white"
           />
         )}
         
-        <div className="flex gap-2">
+        <div className="flex gap-2 items-center">
           <input
             ref={fileInputRef}
             type="file"
             className="hidden"
+            multiple
             accept="image/*,video/*,audio/*,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx"
             onChange={handleFileSelect}
             disabled={!isMessagingAllowed}
@@ -236,22 +373,43 @@ export function ChatArea({
           >
             <Paperclip className="h-4 w-4" />
           </Button>
-          <Input
-            placeholder={isMessagingAllowed ? "Type a message..." : "Messaging disabled"}
+          
+          <Popover open={showEmojiPicker} onOpenChange={setShowEmojiPicker}>
+            <PopoverTrigger asChild>
+              <Button variant="outline" size="icon" disabled={!isMessagingAllowed}>
+                <Smile className="h-4 w-4" />
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent className="w-auto p-0 border-none shadow-none" side="top" align="start">
+              <EmojiPicker 
+                onEmojiClick={onEmojiClick}
+                width={300}
+                height={400}
+                previewConfig={{ showPreview: false }}
+              />
+            </PopoverContent>
+          </Popover>
+
+          <Textarea
+            placeholder={
+              selectedFiles.length > 0
+                ? "Use caption field above..." 
+                : (isMessagingAllowed ? "Type a message..." : "Messaging disabled")
+            }
             value={messageInput}
             onChange={(e) => setMessageInput(e.target.value)}
-            onKeyPress={(e) => {
-              if (e.key === "Enter" && !e.shiftKey && isMessagingAllowed && !selectedFile) {
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey && isMessagingAllowed && selectedFiles.length === 0) {
                 e.preventDefault();
                 handleSendMessage();
               }
             }}
-            className="bg-white"
-            disabled={!isMessagingAllowed || isUploading}
+            className="bg-white min-h-[40px] max-h-[120px] flex-1"
+            disabled={!isMessagingAllowed || isUploading || selectedFiles.length > 0}
           />
           <Button 
-            onClick={selectedFile ? handleSendMedia : handleSendMessage}
-            disabled={(!messageInput.trim() && !selectedFile) || !isMessagingAllowed || isUploading} 
+            onClick={selectedFiles.length > 0 ? handleSendMedia : handleSendMessage}
+            disabled={(!messageInput.trim() && selectedFiles.length === 0) || !isMessagingAllowed || isUploading} 
             className="bg-[#25d366] hover:bg-[#20bd5a] disabled:opacity-50"
           >
             {isUploading ? "..." : <Send className="h-4 w-4" />}
