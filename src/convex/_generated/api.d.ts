@@ -16,6 +16,7 @@ import type * as comments from "../comments.js";
 import type * as crons from "../crons.js";
 import type * as emailKeys from "../emailKeys.js";
 import type * as emails from "../emails.js";
+import type * as files from "../files.js";
 import type * as http from "../http.js";
 import type * as leads from "../leads.js";
 import type * as masterdata from "../masterdata.js";
@@ -26,6 +27,7 @@ import type * as smsTracking from "../smsTracking.js";
 import type * as users from "../users.js";
 import type * as webhook from "../webhook.js";
 import type * as whatsapp from "../whatsapp.js";
+import type * as whatsappMedia from "../whatsappMedia.js";
 import type * as whatsappPortal from "../whatsappPortal.js";
 import type * as whatsappQueries from "../whatsappQueries.js";
 
@@ -44,6 +46,7 @@ declare const fullApi: ApiFromModules<{
   crons: typeof crons;
   emailKeys: typeof emailKeys;
   emails: typeof emails;
+  files: typeof files;
   http: typeof http;
   leads: typeof leads;
   masterdata: typeof masterdata;
@@ -54,6 +57,7 @@ declare const fullApi: ApiFromModules<{
   users: typeof users;
   webhook: typeof webhook;
   whatsapp: typeof whatsapp;
+  whatsappMedia: typeof whatsappMedia;
   whatsappPortal: typeof whatsappPortal;
   whatsappQueries: typeof whatsappQueries;
 }>;

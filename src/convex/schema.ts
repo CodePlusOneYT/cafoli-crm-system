@@ -103,6 +103,7 @@ export default defineSchema({
     heat: v.optional(v.string()),
     lastActivityTime: v.optional(v.number()),
     unreadCount: v.optional(v.number()),
+    lastMessage: v.optional(v.string()),
   })
     .index("email", ["email"])
     .index("by_status", ["status"])
@@ -119,6 +120,11 @@ export default defineSchema({
     status: v.optional(v.string()),
     timestamp: v.number(),
     metadata: v.optional(v.any()),
+    mediaType: v.optional(v.string()),
+    mediaUrl: v.optional(v.string()),
+    mediaId: v.optional(v.string()),
+    mimeType: v.optional(v.string()),
+    caption: v.optional(v.string()),
   })
     .index("by_leadId", ["leadId"])
     .index("by_phoneNumber", ["phoneNumber"])

@@ -1,14 +1,11 @@
 import { useState, useEffect, useRef, useMemo } from "react";
-import { useQuery as useConvexQuery, useAction } from "convex/react";
+import { useQuery as useConvexQuery, useAction, useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { useCrmAuth } from "@/hooks/use-crm-auth";
 import { Layout } from "@/components/Layout";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
-import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
-import { Send, MessageSquare, Check, CheckCheck } from "lucide-react";
 import { toast } from "sonner";
+import { LeadList } from "@/components/whatsapp/LeadList";
+import { ChatArea } from "@/components/whatsapp/ChatArea";
 
 // @ts-ignore - TS2589: Known Convex type inference limitation
 const getLeadsWithMessagesQuery: any = (() => api.whatsappPortal.getLeadsWithMessages)();
@@ -23,6 +20,10 @@ export default function WhatsAppPage() {
   const [selectedLeadId, setSelectedLeadId] = useState<string | null>(null);
   const [messageInput, setMessageInput] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [caption, setCaption] = useState("");
+  const [isUploading, setIsUploading] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // @ts-ignore - Convex type inference limitation
   const leadsWithMessages = useConvexQuery(
@@ -40,6 +41,16 @@ export default function WhatsAppPage() {
 
   const sendMessage = useAction(api.whatsapp.sendMessage);
   const sendTemplateMessage = useAction(api.whatsapp.sendTemplateMessage);
+  const sendMediaMessage = useAction(api.whatsapp.sendMediaMessage);
+  const markMessagesAsRead = useMutation(api.whatsappQueries.markMessagesAsRead);
+  const generateUploadUrl = useMutation(api.files.generateUploadUrl);
+
+  // Mark messages as read when lead is selected
+  useEffect(() => {
+    if (selectedLeadId && authReady) {
+      markMessagesAsRead({ leadId: selectedLeadId as any });
+    }
+  }, [selectedLeadId, authReady, markMessagesAsRead]);
 
   // Log webhook data to console for debugging
   useEffect(() => {
@@ -115,21 +126,6 @@ export default function WhatsAppPage() {
 
   if (!currentUser) return <Layout><div /></Layout>;
 
-  // Helper function to render read receipt icons
-  const renderReadReceipt = (status: string | undefined) => {
-    if (!status || status === "sent") {
-      // Single tick - sent but not delivered
-      return <Check className="h-3 w-3 inline ml-1" />;
-    } else if (status === "delivered") {
-      // Double tick - delivered but not read
-      return <CheckCheck className="h-3 w-3 inline ml-1" />;
-    } else if (status === "read") {
-      // Blue double tick - read
-      return <CheckCheck className="h-3 w-3 inline ml-1 text-blue-400" />;
-    }
-    return null;
-  };
-
   // Helper function to send welcome message
   const handleSendWelcomeMessage = async () => {
     if (!selectedLeadId || !currentUser) return;
@@ -156,187 +152,80 @@ export default function WhatsAppPage() {
     }
   };
 
-  return (
-    <Layout>
-      <div className="h-[calc(100vh-4rem)] flex flex-col max-w-7xl mx-auto">
-        <div className="flex items-center justify-between mb-4">
-          <h1 className="text-2xl font-bold">WhatsApp Portal</h1>
-          <div className="text-sm text-gray-600">
-            Showing {filteredLeads.length} of {leadsWithMessages?.length || 0} leads
-          </div>
-        </div>
+  // Helper function to get media type from file
+  const getMediaType = (file: File): string => {
+    const mimeType = file.type;
+    if (mimeType.startsWith("image/")) return "image";
+    if (mimeType.startsWith("video/")) return "video";
+    if (mimeType.startsWith("audio/")) return "audio";
+    return "document";
+  };
 
-        <div className="flex-1 grid grid-cols-1 md:grid-cols-3 gap-4 overflow-hidden">
-          {/* Left sidebar - Leads list */}
-          <Card className="md:col-span-1 flex flex-col overflow-hidden">
-            <CardHeader className="pb-3">
-              <CardTitle className="text-lg">Leads</CardTitle>
-              <Input
-                placeholder="Search leads..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="mt-2"
-              />
-            </CardHeader>
-            <CardContent className="flex-1 overflow-y-auto p-0">
-              <div className="space-y-1">
-                {filteredLeads.length === 0 && (
-                  <div className="p-4 text-center text-gray-500">
-                    {searchQuery ? "No leads match your search" : "No leads available"}
-                  </div>
-                )}
-                {filteredLeads.map((lead: any) => (
-                  <button
-                    key={lead._id}
-                    onClick={() => setSelectedLeadId(lead._id)}
-                    className={`w-full text-left p-3 hover:bg-gray-50 border-b transition-colors ${
-                      selectedLeadId === lead._id 
-                        ? "bg-blue-50 border-l-4 border-l-blue-500" 
-                        : lead.unreadCount > 0 
-                        ? "bg-green-50 border-l-4 border-l-green-500" 
-                        : ""
-                    }`}
-                  >
-                    <div className="flex items-start justify-between gap-2">
-                      <div className="flex-1 min-w-0">
-                        <div className={`font-medium truncate ${lead.unreadCount > 0 ? "font-bold" : ""}`}>
-                          {lead.name || "Unnamed Lead"}
-                        </div>
-                        <div className="text-xs text-gray-500 truncate">{lead.mobileNo || "No phone"}</div>
-                        {lead.lastMessage && (
-                          <div className={`text-xs truncate mt-1 ${lead.unreadCount > 0 ? "text-gray-700 font-medium" : "text-gray-400"}`}>
-                            {lead.lastMessage}
-                          </div>
-                        )}
-                      </div>
-                      <div className="flex flex-col items-end gap-1 shrink-0">
-                        {lead.unreadCount > 0 && (
-                          <Badge variant="default" className="text-xs bg-green-600 hover:bg-green-700">
-                            {lead.unreadCount}
-                          </Badge>
-                        )}
-                        {lead.lastMessageTime && (
-                          <div className="text-xs text-gray-400">
-                            {new Date(lead.lastMessageTime).toLocaleDateString()}
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  </button>
-                ))}
-              </div>
-            </CardContent>
-          </Card>
+  // Helper function to handle file selection
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
 
-          {/* Right side - Chat area */}
-          <Card className="md:col-span-2 flex flex-col overflow-hidden bg-gray-50">
-            {selectedLeadId ? (
-              <>
-                <CardHeader className="pb-3 border-b bg-white">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <CardTitle className="text-lg">
-                        {filteredLeads.find((l: any) => l._id === selectedLeadId)?.name || "Chat"}
-                      </CardTitle>
-                      <div className="text-sm text-gray-500">
-                        {filteredLeads.find((l: any) => l._id === selectedLeadId)?.mobileNo}
-                      </div>
-                    </div>
-                    {selectedLeadId && !filteredLeads.find((l: any) => l._id === selectedLeadId)?.welcomeMessageSent && (
-                      <Button
-                        onClick={handleSendWelcomeMessage}
-                        variant="outline"
-                        size="sm"
-                        className="ml-2"
-                      >
-                        Send Welcome Message
-                      </Button>
-                    )}
-                  </div>
-                </CardHeader>
-                <CardContent className="flex-1 overflow-y-auto p-4 bg-[#e5ddd5]">
-                  <div className="space-y-2">
-                    {!messages || messages.length === 0 ? (
-                      <div className="text-center text-gray-500 py-8">
-                        No messages yet. Start the conversation!
-                      </div>
-                    ) : (
-                      messages.map((msg: any) => (
-                        <div
-                          key={msg._id}
-                          className={`flex ${msg.direction === "outbound" ? "justify-end" : "justify-start"}`}
-                        >
-                          <div
-                            className={`max-w-[70%] rounded-lg px-3 py-2 shadow-sm ${
-                              msg.direction === "outbound"
-                                ? "bg-[#dcf8c6]"
-                                : "bg-white"
-                            }`}
-                          >
-                            <div className="text-sm break-words text-gray-900">{msg.message}</div>
-                            <div className="flex items-center justify-end gap-1 mt-1">
-                              <span className="text-[10px] text-gray-500">
-                                {new Date(msg.timestamp).toLocaleTimeString([], { 
-                                  hour: '2-digit', 
-                                  minute: '2-digit' 
-                                })}
-                              </span>
-                              {msg.direction === "outbound" && (
-                                <span className="text-gray-500">
-                                  {renderReadReceipt(msg.status)}
-                                </span>
-                              )}
-                            </div>
-                          </div>
-                        </div>
-                      ))
-                    )}
-                    <div ref={messagesEndRef} />
-                  </div>
-                </CardContent>
-                <div className="p-4 border-t bg-white">
-                  {!isMessagingAllowed && (
-                    <div className="mb-2 text-xs text-amber-600 bg-amber-50 p-2 rounded">
-                      ⚠️ Messaging disabled: Lead hasn't sent a message in the last 24 hours
-                    </div>
-                  )}
-                  <div className="flex gap-2">
-                    <Input
-                      placeholder={isMessagingAllowed ? "Type a message..." : "Messaging disabled"}
-                      value={messageInput}
-                      onChange={(e) => setMessageInput(e.target.value)}
-                      onKeyPress={(e) => {
-                        if (e.key === "Enter" && !e.shiftKey && isMessagingAllowed) {
-                          e.preventDefault();
-                          handleSendMessage();
-                        }
-                      }}
-                      className="bg-white"
-                      disabled={!isMessagingAllowed}
-                    />
-                    <Button 
-                      onClick={handleSendMessage} 
-                      disabled={!messageInput.trim() || !isMessagingAllowed} 
-                      className="bg-[#25d366] hover:bg-[#20bd5a] disabled:opacity-50"
-                    >
-                      <Send className="h-4 w-4" />
-                    </Button>
-                  </div>
-                </div>
-              </>
-            ) : (
-              <CardContent className="flex-1 flex items-center justify-center bg-gray-50">
-                <div className="text-center text-gray-500">
-                  <MessageSquare className="h-12 w-12 mx-auto mb-2 opacity-50" />
-                  <p>Select a lead to start chatting</p>
-                </div>
-              </CardContent>
-            )}
-          </Card>
-        </div>
-      </div>
-    </Layout>
-  );
+    // Validate file size (max 16MB for most media, 100MB for videos)
+    const maxSize = file.type.startsWith("video/") ? 100 * 1024 * 1024 : 16 * 1024 * 1024;
+    if (file.size > maxSize) {
+      toast.error(`File too large. Max size: ${maxSize / (1024 * 1024)}MB`);
+      return;
+    }
+
+    setSelectedFile(file);
+  };
+
+  // Helper function to send media message
+  const handleSendMedia = async () => {
+    if (!selectedFile || !selectedLeadId || !currentUser) return;
+
+    const lead = filteredLeads.find((l: any) => l._id === selectedLeadId);
+    if (!lead?.mobileNo) {
+      toast.error("Lead has no phone number");
+      return;
+    }
+
+    setIsUploading(true);
+    try {
+      // 1. Get upload URL
+      const postUrl = await generateUploadUrl();
+      
+      // 2. Upload file
+      const result = await fetch(postUrl, {
+        method: "POST",
+        headers: { "Content-Type": selectedFile.type },
+        body: selectedFile,
+      });
+      
+      if (!result.ok) {
+        throw new Error(`Upload failed: ${result.statusText}`);
+      }
+      
+      const { storageId } = await result.json();
+
+      // 3. Send message with storage ID
+      const mediaType = getMediaType(selectedFile);
+      const sendResult = await sendMediaMessage({
+        phoneNumber: lead.mobileNo,
+        mediaType,
+        mediaStorageId: storageId,
+        caption: caption || undefined,
+        filename: selectedFile.name,
+        leadId: selectedLeadId as any,
+      });
+      
+      console.log("[WhatsApp] Media message sent successfully:", sendResult);
+      setSelectedFile(null);
+      setCaption("");
+      toast.success("Media sent successfully!");
+    } catch (error: any) {
+      console.error("[WhatsApp] Failed to send media:", error);
+      toast.error(error?.message || "Failed to send media");
+    } finally {
+      setIsUploading(false);
+    }
+  };
 
   async function handleSendMessage() {
     if (!messageInput.trim() || !selectedLeadId || !currentUser) return;
@@ -362,4 +251,47 @@ export default function WhatsAppPage() {
       toast.error(error?.message || "Failed to send message");
     }
   }
+
+  return (
+    <Layout>
+      <div className="h-[calc(100vh-4rem)] flex flex-col max-w-7xl mx-auto">
+        <div className="flex items-center justify-between mb-4">
+          <h1 className="text-2xl font-bold">WhatsApp Portal</h1>
+          <div className="text-sm text-gray-600">
+            Showing {filteredLeads.length} of {leadsWithMessages?.length || 0} leads
+          </div>
+        </div>
+
+        <div className="flex-1 grid grid-cols-1 md:grid-cols-3 gap-4 overflow-hidden">
+          <LeadList
+            leads={filteredLeads}
+            selectedLeadId={selectedLeadId}
+            onSelectLead={setSelectedLeadId}
+            searchQuery={searchQuery}
+            setSearchQuery={setSearchQuery}
+          />
+
+          <ChatArea
+            selectedLeadId={selectedLeadId}
+            lead={filteredLeads.find((l: any) => l._id === selectedLeadId)}
+            messages={messages}
+            messageInput={messageInput}
+            setMessageInput={setMessageInput}
+            handleSendMessage={handleSendMessage}
+            handleSendWelcomeMessage={handleSendWelcomeMessage}
+            isMessagingAllowed={isMessagingAllowed}
+            selectedFile={selectedFile}
+            setSelectedFile={setSelectedFile}
+            caption={caption}
+            setCaption={setCaption}
+            isUploading={isUploading}
+            handleFileSelect={handleFileSelect}
+            handleSendMedia={handleSendMedia}
+            fileInputRef={fileInputRef}
+            messagesEndRef={messagesEndRef}
+          />
+        </div>
+      </div>
+    </Layout>
+  );
 }
