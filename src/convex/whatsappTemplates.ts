@@ -36,7 +36,8 @@ export const createTemplate = mutation({
 
     if (isAdmin) {
       // Schedule the action to submit to Meta
-      await ctx.scheduler.runAfter(0, internal.whatsappTemplateActions.submitTemplateToMeta, {
+      // Cast to any to avoid type error if api types aren't updated yet
+      await ctx.scheduler.runAfter(0, (internal as any).whatsappTemplateActions.submitTemplateToMeta, {
         templateId,
       });
     }
@@ -82,31 +83,6 @@ export const updateTemplateStatus = mutation({
       status: args.status,
       rejectionReason: args.reason,
     });
-  },
-});
-
-// Internal functions for Actions
-
-export const getTemplateInternal = internalQuery({
-  args: { templateId: v.id("whatsappTemplates") },
-  handler: async (ctx, args) => {
-    return await ctx.db.get(args.templateId);
-  },
-});
-
-export const updateTemplateMetaStatus = internalMutation({
-  args: {
-    templateId: v.id("whatsappTemplates"),
-    status: v.string(),
-    wabaTemplateId: v.optional(v.string()),
-    reason: v.optional(v.string()),
-  },
-  handler: async (ctx, args) => {
-    const updates: any = { status: args.status };
-    if (args.wabaTemplateId) updates.wabaTemplateId = args.wabaTemplateId;
-    if (args.reason) updates.rejectionReason = args.reason;
-    
-    await ctx.db.patch(args.templateId, updates);
   },
 });
 

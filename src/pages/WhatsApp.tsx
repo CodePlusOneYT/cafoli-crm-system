@@ -6,6 +6,9 @@ import { Layout } from "@/components/Layout";
 import { toast } from "sonner";
 import { LeadList } from "@/components/whatsapp/LeadList";
 import { ChatArea } from "@/components/whatsapp/ChatArea";
+import { Button } from "@/components/ui/button";
+import { Plus } from "lucide-react";
+import { useNavigate } from "react-router-dom";
 
 // @ts-ignore - TS2589: Known Convex type inference limitation
 const getLeadsWithMessagesQuery: any = (() => api.whatsappPortal.getLeadsWithMessages)();
@@ -14,6 +17,7 @@ const getLeadMessagesQuery: any = (() => api.whatsappQueries.getLeadMessages)();
 
 export default function WhatsAppPage() {
   const { currentUser, initializeAuth } = useCrmAuth();
+  const navigate = useNavigate();
 
   // Initialize auth state
   const [authReady, setAuthReady] = useState(false);
@@ -44,16 +48,27 @@ export default function WhatsAppPage() {
   const sendTemplateMessage = useAction(api.whatsapp.sendTemplateMessage);
   const sendMediaMessage = useAction(api.whatsapp.sendMediaMessage);
   const sendReaction = useAction(api.whatsapp.sendReaction);
-  const markMessagesAsRead = useMutation(api.whatsappQueries.markMessagesAsRead);
+  const markAsRead = useAction(api.whatsapp.markAsRead);
   const generateUploadUrl = useMutation(api.files.generateUploadUrl);
 
-  // Mark messages as read when lead is selected
+  // Mark messages as read when lead is selected or new messages arrive
   useEffect(() => {
-    if (selectedLeadId && authReady) {
-      markMessagesAsRead({ leadId: selectedLeadId as any });
-      setReplyingTo(null); // Clear reply when changing leads
+    if (selectedLeadId && authReady && messages) {
+      const hasUnread = messages.some((msg: any) => msg.direction === "inbound" && msg.status !== "read");
+      const lead = leadsWithMessages?.find((l: any) => l._id === selectedLeadId);
+      
+      if (hasUnread || (lead && lead.unreadCount > 0)) {
+        markAsRead({ leadId: selectedLeadId as any });
+      }
     }
-  }, [selectedLeadId, authReady, markMessagesAsRead]);
+  }, [selectedLeadId, authReady, messages, leadsWithMessages, markAsRead]);
+
+  // Clear reply when changing leads
+  useEffect(() => {
+    if (selectedLeadId) {
+      setReplyingTo(null);
+    }
+  }, [selectedLeadId]);
 
   // Log webhook data to console for debugging
   useEffect(() => {
@@ -129,10 +144,8 @@ export default function WhatsAppPage() {
 
   if (!currentUser) return <Layout><div /></Layout>;
 
-  // Helper function to send welcome message
-  const handleSendWelcomeMessage = async () => {
+  const handleSendTemplateWrapper = async (template: any) => {
     if (!selectedLeadId || !currentUser) return;
-
     const lead = filteredLeads.find((l: any) => l._id === selectedLeadId);
     if (!lead?.mobileNo) {
       toast.error("Lead has no phone number");
@@ -140,18 +153,17 @@ export default function WhatsAppPage() {
     }
 
     try {
-      const result = await sendTemplateMessage({
+      await sendTemplateMessage({
         phoneNumber: lead.mobileNo,
-        templateName: "cafoliwelcomemessage",
-        languageCode: "en",
+        templateName: template.name,
+        languageCode: template.language,
         leadId: selectedLeadId as any,
+        components: [] // We might need to handle variables later
       });
-      
-      console.log("[WhatsApp] Welcome message sent successfully:", result);
-      toast.success("Welcome message sent successfully!");
+      toast.success(`Template "${template.name}" sent successfully`);
     } catch (error: any) {
-      console.error("[WhatsApp] Failed to send welcome message:", error);
-      toast.error(error?.message || "Failed to send welcome message");
+      console.error("[WhatsApp] Failed to send template:", error);
+      toast.error(error?.message || "Failed to send template");
     }
   };
 
@@ -312,8 +324,19 @@ export default function WhatsAppPage() {
       <div className="h-[calc(100vh-4rem)] flex flex-col max-w-7xl mx-auto">
         <div className="flex items-center justify-between mb-4">
           <h1 className="text-2xl font-bold">WhatsApp Portal</h1>
-          <div className="text-sm text-gray-600">
-            Showing {filteredLeads.length} of {leadsWithMessages?.length || 0} leads
+          <div className="flex items-center gap-4">
+            <Button 
+              variant="outline" 
+              size="sm" 
+              className="gap-2"
+              onClick={() => navigate("/whatsapp/create-template")}
+            >
+              <Plus className="w-4 h-4" />
+              Create New Template
+            </Button>
+            <div className="text-sm text-gray-600">
+              Showing {filteredLeads.length} of {leadsWithMessages?.length || 0} leads
+            </div>
           </div>
         </div>
 
@@ -333,7 +356,6 @@ export default function WhatsAppPage() {
             messageInput={messageInput}
             setMessageInput={setMessageInput}
             handleSendMessage={handleSendMessage}
-            handleSendWelcomeMessage={handleSendWelcomeMessage}
             isMessagingAllowed={isMessagingAllowed}
             selectedFiles={selectedFiles}
             handleRemoveFile={handleRemoveFile}
@@ -347,6 +369,7 @@ export default function WhatsAppPage() {
             messagesEndRef={messagesEndRef}
             replyingTo={replyingTo}
             setReplyingTo={setReplyingTo}
+            onSendTemplate={handleSendTemplateWrapper}
           />
         </div>
       </div>
