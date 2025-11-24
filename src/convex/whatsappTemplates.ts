@@ -62,7 +62,7 @@ export const getTemplates = query({
           templates = templates.filter(
             (t) =>
               t.visibility === "public" ||
-              t.createdBy === args.currentUserId
+              (t.createdBy && t.createdBy === args.currentUserId)
           );
         }
       }
@@ -83,6 +83,77 @@ export const updateTemplateStatus = mutation({
       status: args.status,
       rejectionReason: args.reason,
     });
+  },
+});
+
+export const upsertTemplates = internalMutation({
+  args: {
+    templates: v.array(v.object({
+      name: v.string(),
+      language: v.string(),
+      category: v.string(),
+      components: v.any(),
+      status: v.string(),
+      wabaTemplateId: v.string(),
+    }))
+  },
+  handler: async (ctx, args) => {
+    for (const t of args.templates) {
+      // Check if exists by wabaTemplateId
+      const existing = await ctx.db
+        .query("whatsappTemplates")
+        .filter(q => q.eq(q.field("wabaTemplateId"), t.wabaTemplateId))
+        .first();
+
+      if (existing) {
+        // Update existing template with Meta's data (Meta is source of truth)
+        await ctx.db.patch(existing._id, {
+          status: t.status,
+          components: t.components,
+          category: t.category,
+          name: t.name,
+          language: t.language,
+        });
+      } else {
+        // Check if exists by name and language (legacy or created locally but not linked yet)
+        const existingByName = await ctx.db
+            .query("whatsappTemplates")
+            .filter(q => q.and(
+                q.eq(q.field("name"), t.name),
+                q.eq(q.field("language"), t.language)
+            ))
+            .first();
+        
+        if (existingByName) {
+             // Link existing template with Meta ID and update with Meta's data
+             await ctx.db.patch(existingByName._id, {
+                wabaTemplateId: t.wabaTemplateId,
+                status: t.status,
+                components: t.components,
+                category: t.category,
+             });
+        } else {
+            // Create new template from Meta
+            await ctx.db.insert("whatsappTemplates", {
+              name: t.name,
+              language: t.language,
+              category: t.category,
+              components: t.components,
+              status: t.status,
+              wabaTemplateId: t.wabaTemplateId,
+              visibility: "public", // Default to public for external templates
+              // createdBy is undefined for synced templates
+            });
+        }
+      }
+    }
+  }
+});
+
+export const deleteTemplateInternal = internalMutation({
+  args: { templateId: v.id("whatsappTemplates") },
+  handler: async (ctx, args) => {
+    await ctx.db.delete(args.templateId);
   },
 });
 
