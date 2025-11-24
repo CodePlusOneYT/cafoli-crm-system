@@ -136,20 +136,36 @@ export const getAllLeads = query({
 export const getMyLeads = query({
   args: {
     currentUserId: v.optional(v.union(v.id("users"), v.string())),
+    limit: v.optional(v.number()),
   },
   handler: async (ctx, args) => {
     try {
+      // Validate currentUserId exists
+      if (!args.currentUserId || args.currentUserId === "undefined" || args.currentUserId === "null") {
+        return [];
+      }
+
+      // Validate it's a proper ID format using normalizeId
+      const normalizedUserId = ctx.db.normalizeId("users", args.currentUserId);
+      if (!normalizedUserId) {
+        // If it's not a valid ID, we can't fetch the user
+        return [];
+      }
+
       let currentUser: any = null;
-      // FIX: Robustly resolve currentUser for both Id and string formats
-      if (args.currentUserId) {
-        try {
-          currentUser = await ctx.db.get(args.currentUserId as any);
-        } catch (_) {
-          currentUser = null;
-        }
+      try {
+        currentUser = await ctx.db.get(normalizedUserId);
+      } catch (error) {
+        console.error("Error fetching user in getMyLeads:", error);
+        return [];
       }
       
-      if (!currentUser || currentUser.role === ROLES.ADMIN) {
+      if (!currentUser) {
+        return [];
+      }
+
+      // Admin users should not use this query
+      if (currentUser.role === ROLES.ADMIN) {
         return [];
       }
 
@@ -159,14 +175,22 @@ export const getMyLeads = query({
           .query("leads")
           .withIndex("assignedTo", (q) => q.eq("assignedTo", currentUser._id))
           .collect();
-      } catch {
+      } catch (error) {
+        console.error("Error querying leads by index:", error);
         // Fallback to full table scan if index fails
-        const all = await ctx.db.query("leads").collect();
-        leads = all.filter((l) => String(l.assignedTo ?? "") === String(currentUser._id));
+        try {
+          const all = await ctx.db.query("leads").collect();
+          leads = all.filter((l) => String(l.assignedTo ?? "") === String(currentUser._id));
+        } catch (fallbackError) {
+          console.error("Fallback query also failed:", fallbackError);
+          return [];
+        }
       }
 
       // Filter out not relevant leads
       leads = leads.filter((l) => l.status !== LEAD_STATUS.NOT_RELEVANT);
+
+      const limit = Math.min(Math.max(args.limit ?? 500, 1), 1000);
 
       // Sort by lastActivityTime (most recent first), fallback to _creationTime
       leads.sort((a, b) => {
@@ -174,9 +198,10 @@ export const getMyLeads = query({
         const bTime = b.lastActivityTime ?? b._creationTime;
         return bTime - aTime; // Descending order (newest first)
       });
-      return leads;
+      
+      return leads.slice(0, limit);
     } catch (err) {
-      console.error("getMyLeads error:", err);
+      console.error("getMyLeads outer error:", err);
       return [];
     }
   },

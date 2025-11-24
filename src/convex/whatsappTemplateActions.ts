@@ -150,47 +150,80 @@ export const deleteTemplate = action({
     name: v.string(),
   },
   handler: async (ctx, args) => {
-    const token = process.env.WHATSAPP_ACCESS_TOKEN;
-    const wabaId = process.env.WHATSAPP_BUSINESS_ACCOUNT_ID;
-    const version = process.env.CLOUD_API_VERSION || "v21.0";
-
-    if (!token || !wabaId) {
-      throw new Error("Missing WhatsApp credentials");
-    }
-
-    console.log(`[WhatsApp] Deleting template from Meta: ${args.name}`);
-
     try {
-      const response = await fetch(
-        `https://graph.facebook.com/${version}/${wabaId}/message_templates?name=${args.name}`,
-        {
-          method: "DELETE",
-          headers: {
-            Authorization: `Bearer ${token}`,
-          },
-        }
-      );
-
-      const data = await response.json();
-
-      if (!response.ok) {
-        console.error("[WhatsApp] Template deletion from Meta failed:", data);
-        // If it fails on Meta, we throw an error. 
-        // User can manually delete from DB if needed via a different mechanism if it's out of sync, 
-        // but generally we want to ensure it's gone from Meta.
-        throw new Error(data.error?.message || "Failed to delete from Meta");
+      // First verify the template exists
+      let template;
+      try {
+        template = await ctx.runQuery(internal.whatsappTemplates.getTemplateInternal, {
+          templateId: args.templateId,
+        });
+      } catch (err) {
+        console.error("Error fetching template internal:", err);
+        // If we can't verify it exists, we can't safely delete it from Meta or DB
+        // But if the error is "Document not found", we can assume it's gone.
+        // However, runQuery usually throws if the function throws.
+        // Let's assume if this fails, we abort.
+        throw new Error("Failed to verify template existence: " + (err as any).message);
       }
 
-      console.log("[WhatsApp] Template deleted from Meta successfully");
+      if (!template) {
+        // If template is already gone from DB, consider it success
+        console.log("Template not found in database, might be already deleted");
+        return { success: true };
+      }
 
-      // Delete from DB
-      await ctx.runMutation(internal.whatsappTemplates.deleteTemplateInternal, {
-        templateId: args.templateId,
-      });
+      const token = process.env.WHATSAPP_ACCESS_TOKEN;
+      const wabaId = process.env.WHATSAPP_BUSINESS_ACCOUNT_ID;
+      const version = process.env.CLOUD_API_VERSION || "v21.0";
 
+      if (!token || !wabaId) {
+        console.error("Missing WhatsApp credentials");
+        throw new Error("Missing WhatsApp credentials. Please check your environment variables.");
+      }
+
+      console.log(`[WhatsApp] Deleting template from Meta: ${args.name}`);
+
+      try {
+        const response = await fetch(
+          `https://graph.facebook.com/${version}/${wabaId}/message_templates?name=${encodeURIComponent(args.name)}`,
+          {
+            method: "DELETE",
+            headers: {
+              Authorization: `Bearer ${token}`,
+            },
+          }
+        );
+
+        const data = await response.json();
+
+        if (!response.ok) {
+          console.error("[WhatsApp] Template deletion from Meta failed:", data);
+          // If template doesn't exist on Meta (already deleted), we can still delete from DB
+          if (data.error?.code === 100 || data.error?.message?.includes("does not exist")) {
+            console.log("[WhatsApp] Template not found on Meta, deleting from DB only");
+          } else {
+            // Log but don't block DB deletion if it's a permission issue or something else
+            console.warn("Failed to delete from Meta, but proceeding to delete from DB:", data.error?.message);
+          }
+        } else {
+          console.log("[WhatsApp] Template deleted from Meta successfully");
+        }
+
+        // Delete from DB
+        await ctx.runMutation(internal.whatsappTemplates.deleteTemplateInternal, {
+          templateId: args.templateId,
+        });
+
+        return { success: true };
+
+      } catch (error: any) {
+        console.error("[WhatsApp] Delete exception:", error);
+        throw new Error(`Delete failed: ${error.message}`);
+      }
     } catch (error: any) {
-      console.error("[WhatsApp] Delete exception:", error);
-      throw new Error(`Delete failed: ${error.message}`);
+      console.error("[WhatsApp] Delete template error:", error);
+      // Return a structured error if possible, or throw a clean error
+      throw new Error(`Failed to delete template: ${error.message}`);
     }
   },
 });
