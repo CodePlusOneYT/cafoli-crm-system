@@ -17,6 +17,7 @@ import { useEffect, useState, useRef, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { Filter } from "lucide-react";
+import { sortLeadsForMyLeads, getLeadHighlight } from "@/lib/leadHighlighting";
 
 // Add a tiny helper to play sounds
 function playSound(src: string) {
@@ -171,13 +172,8 @@ export default function MyLeadsPage() {
       return true;
     });
 
-    // Sort: leads with nextFollowup first (ascending), then by lastActivityTime (most recent first)
-    return filtered.sort((a: any, b: any) => {
-      // Sort by lastActivityTime (most recent first), fallback to creation time
-      const aTime = a?.lastActivityTime ?? a?._creationTime ?? 0;
-      const bTime = b?.lastActivityTime ?? b?._creationTime ?? 0;
-      return bTime - aTime;
-    });
+    // Use the lead highlighting sorting logic
+    return sortLeadsForMyLeads(filtered);
   }, [leads, search, selectedStatuses, selectedSources, selectedHeats, currentUser?._id]);
 
   // Toggle functions for filters
@@ -403,12 +399,17 @@ export default function MyLeadsPage() {
           </CardHeader>
           <CardContent>
             <Accordion type="single" collapsible className="w-full">
-              {(filteredLeads ?? []).map((lead: any) => (
+              {(filteredLeads ?? []).map((lead: any) => {
+                const highlight = getLeadHighlight(lead);
+                return (
                 <AccordionItem key={String(lead._id)} value={String(lead._id)}>
-                  <AccordionTrigger className="text-left">
+                  <AccordionTrigger className={`text-left ${highlight ? highlight.color : ""}`}>
                     <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between w-full gap-2">
                       <div className="text-sm">
                         <div className="font-medium">{lead.name} <span className="text-gray-500">• {lead.subject}</span></div>
+                        <div className="text-xs text-gray-500 my-0.5">
+                          {new Date(lead._creationTime).toLocaleString()} <span className="mx-1">•</span> Source: <span className="capitalize">{lead.source || "Unknown"}</span>
+                        </div>
                         <div className="text-xs text-gray-600 line-clamp-1">{lead.message}</div>
                       </div>
                       <div className="flex items-center gap-2">
@@ -922,7 +923,7 @@ export default function MyLeadsPage() {
                     </div>
                   </AccordionContent>
                 </AccordionItem>
-              ))}
+              )})}
             </Accordion>
           </CardContent>
         </Card>
