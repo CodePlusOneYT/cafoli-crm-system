@@ -8,6 +8,7 @@
  * @module
  */
 
+import type * as assignSerialNumbersScript from "../assignSerialNumbersScript.js";
 import type * as audit from "../audit.js";
 import type * as auth from "../auth.js";
 import type * as auth_emailOtp from "../auth/emailOtp.js";
@@ -24,6 +25,7 @@ import type * as leadBatches from "../leadBatches.js";
 import type * as leadTags from "../leadTags.js";
 import type * as leads from "../leads.js";
 import type * as leadsAdminView from "../leadsAdminView.js";
+import type * as leadsPaginated from "../leadsPaginated.js";
 import type * as masterdata from "../masterdata.js";
 import type * as migrate from "../migrate.js";
 import type * as notifications from "../notifications.js";
@@ -48,6 +50,7 @@ import type {
 } from "convex/server";
 
 declare const fullApi: ApiFromModules<{
+  assignSerialNumbersScript: typeof assignSerialNumbersScript;
   audit: typeof audit;
   auth: typeof auth;
   "auth/emailOtp": typeof auth_emailOtp;
@@ -64,6 +67,7 @@ declare const fullApi: ApiFromModules<{
   leadTags: typeof leadTags;
   leads: typeof leads;
   leadsAdminView: typeof leadsAdminView;
+  leadsPaginated: typeof leadsPaginated;
   masterdata: typeof masterdata;
   migrate: typeof migrate;
   notifications: typeof notifications;

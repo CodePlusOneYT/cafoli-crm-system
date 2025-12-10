@@ -991,4 +991,68 @@ http.route({
   }),
 });
 
+// GET /getleads - Returns all leads with comments, filtering out unassigned Pharmavends leads
+http.route({
+  path: "/getleads",
+  method: "OPTIONS",
+  handler: httpAction(async () => {
+    return corsNoContent();
+  }),
+});
+
+http.route({
+  path: "/getleads",
+  method: "GET",
+  handler: httpAction(async (ctx, _req) => {
+    try {
+      // Get an admin user to run the query
+      const adminUserId = await ensureAdminUserId(ctx);
+      
+      // Fetch all leads
+      const allLeads: any[] = await ctx.runQuery(api.leads.getAllLeads, { 
+        filter: "all", 
+        currentUserId: adminUserId,
+        limit: 10000
+      });
+      
+      // Filter out unassigned Pharmavends leads
+      const filteredLeads = allLeads.filter((lead) => {
+        const source = (lead.source || "").toLowerCase();
+        const isPharmavends = source.includes("pharmavend");
+        const isUnassigned = !lead.assignedTo;
+        
+        // Exclude if it's Pharmavends AND unassigned
+        return !(isPharmavends && isUnassigned);
+      });
+      
+      // Enrich each lead with comments
+      const enrichedLeads = await Promise.all(
+        filteredLeads.map(async (lead) => {
+          // Fetch comments for this lead
+          const comments = await ctx.runQuery(api.comments.getLeadComments, {
+            leadId: lead._id,
+            currentUserId: adminUserId,
+          });
+          
+          return {
+            ...lead,
+            comments: comments || [],
+          };
+        })
+      );
+      
+      return corsJson({ 
+        ok: true, 
+        count: enrichedLeads.length,
+        leads: enrichedLeads 
+      }, 200);
+    } catch (e: any) {
+      return corsJson({ 
+        ok: false, 
+        error: e.message || "Failed to retrieve leads" 
+      }, 500);
+    }
+  }),
+});
+
 export default http;

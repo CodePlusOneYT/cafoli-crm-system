@@ -1,4 +1,4 @@
-import { query, mutation } from "./_generated/server";
+import { query, mutation, internalAction, internalQuery, internalMutation } from "./_generated/server";
 import { v } from "convex/values";
 import { getCurrentUser } from "./users";
 import { ROLES, LEAD_STATUS, leadStatusValidator } from "./schema";
@@ -62,13 +62,27 @@ export const getAllLeads = query({
         return [];
       }
 
-      // Build leads list
-      let leads: any[] = [];
+      // Determine fetch limit (default 500, max 1000)
+      const limit = Math.min(Math.max(args.limit ?? 500, 1), 1000);
+      const leads: any[] = [];
       
+      // Helper to process iterator and fill leads array up to limit
+      const processIterator = async (iterator: any, filterFn: (l: any) => boolean) => {
+        for await (const lead of iterator) {
+          if (filterFn(lead)) {
+            leads.push(lead);
+            if (leads.length >= limit) break;
+          }
+        }
+      };
+
       if (currentUser.role === ROLES.MANAGER) {
         // Managers only see unassigned leads (excluding not relevant)
-        const all = await ctx.db.query("leads").collect();
-        leads = all.filter((l) => l.assignedTo === undefined && l.status !== LEAD_STATUS.NOT_RELEVANT);
+        // Use iterator to scan until we find enough unassigned leads
+        await processIterator(
+          ctx.db.query("leads").order("desc"),
+          (l) => l.assignedTo === undefined && l.status !== LEAD_STATUS.NOT_RELEVANT
+        );
       } else {
         // Admin can see all leads with filtering
         const rawAssignee = args.assigneeId;
@@ -85,40 +99,55 @@ export const getAllLeads = query({
           }
         }
 
-        const all = await ctx.db.query("leads").collect();
-
-        if (normalizedAssignee === "unassigned") {
-          leads = all.filter((l) => l.assignedTo === undefined && l.status !== LEAD_STATUS.NOT_RELEVANT);
-        } else if (normalizedAssignee && normalizedAssignee !== "all") {
-          leads = all.filter((l) => String(l.assignedTo ?? "") === String(normalizedAssignee) && l.status !== LEAD_STATUS.NOT_RELEVANT);
+        if (normalizedAssignee && normalizedAssignee !== "all" && normalizedAssignee !== "unassigned") {
+          // Filter by specific assignee using index
+          await processIterator(
+            ctx.db
+              .query("leads")
+              .withIndex("assignedTo", (q) => q.eq("assignedTo", normalizedAssignee as any))
+              .order("desc"),
+            (l) => l.status !== LEAD_STATUS.NOT_RELEVANT
+          );
+        } else if (args.filter === "assigned") {
+           // Use assignedTo index to get any assigned leads
+           await processIterator(
+             ctx.db.query("leads").withIndex("assignedTo").order("desc"),
+             (l) => l.status !== LEAD_STATUS.NOT_RELEVANT
+           );
+        } else if (normalizedAssignee === "unassigned" || args.filter === "unassigned") {
+          // Unassigned leads
+          await processIterator(
+            ctx.db.query("leads").order("desc"),
+            (l) => l.assignedTo === undefined && l.status !== LEAD_STATUS.NOT_RELEVANT
+          );
+        } else if (args.filter === "no_followup") {
+          // No followup
+          await processIterator(
+            ctx.db.query("leads").order("desc"),
+            (l) => !l.nextFollowup && l.status !== LEAD_STATUS.NOT_RELEVANT
+          );
         } else {
-          // Apply general filter
-          if (args.filter === "assigned") {
-            leads = all.filter((l) => l.assignedTo !== undefined && l.status !== LEAD_STATUS.NOT_RELEVANT);
-          } else if (args.filter === "unassigned") {
-            leads = all.filter((l) => l.assignedTo === undefined && l.status !== LEAD_STATUS.NOT_RELEVANT);
-          } else if (args.filter === "no_followup") {
-            leads = all.filter((l) => !l.nextFollowup && l.status !== LEAD_STATUS.NOT_RELEVANT);
-          } else {
-            leads = all.filter((l) => l.status !== LEAD_STATUS.NOT_RELEVANT);
-          }
+          // Default: All leads (excluding not relevant)
+          // We use the default order (creation time) and filter
+          await processIterator(
+            ctx.db.query("leads").order("desc"),
+            (l) => l.status !== LEAD_STATUS.NOT_RELEVANT
+          );
         }
       }
 
       // Sort by lastActivityTime (most recent first), fallback to _creationTime
+      // Note: The iterator gave us roughly sorted results by creation time, 
+      // but lastActivityTime is better for the user.
       leads.sort((a, b) => {
         const aTime = a.lastActivityTime ?? a._creationTime;
         const bTime = b.lastActivityTime ?? b._creationTime;
         return bTime - aTime; // Descending order (newest first)
       });
 
-      // Apply limit to prevent reading too many bytes - reduced to 100 for safety
-      const limit = Math.min(Math.max(args.limit ?? 100, 1), 500);
-      const limitedLeads = leads.slice(0, limit);
-
       // Replace the in-place mutation with creation of enriched copies to avoid mutating Convex docs
       const enrichedLeads: any[] = [];
-      for (const lead of limitedLeads) {
+      for (const lead of leads) {
         let assignedUserName: string | null = null;
         if (lead.assignedTo) {
           try {
@@ -174,47 +203,37 @@ export const getMyLeads = query({
         return [];
       }
 
-      console.log("getMyLeads: User found:", currentUser.name, "Role:", currentUser.role);
-
-      // Admin users should not use this query
-      if (currentUser.role === ROLES.ADMIN) {
-        console.log("getMyLeads: Admin users should use getAllLeads instead");
-        return [];
-      }
-
-      let leads: any[] = [];
+      const limit = Math.min(Math.max(args.limit ?? 500, 1), 1000);
+      const leads: any[] = [];
+      
       try {
-        leads = await ctx.db
+        // Use iterator to fetch assigned leads and filter efficiently
+        const iterator = ctx.db
           .query("leads")
           .withIndex("assignedTo", (q) => q.eq("assignedTo", currentUser._id))
-          .collect();
-        console.log("getMyLeads: Found", leads.length, "leads via index");
+          .order("desc");
+
+        for await (const lead of iterator) {
+          // Filter out not relevant leads
+          if (lead.status !== LEAD_STATUS.NOT_RELEVANT) {
+            // Apply no_followup filter if specified
+            if (args.filter === "no_followup") {
+              if (!lead.nextFollowup) {
+                leads.push(lead);
+              }
+            } else {
+              leads.push(lead);
+            }
+          }
+          
+          if (leads.length >= limit) break;
+        }
+          
+        console.log("getMyLeads: Found", leads.length, "leads via iterator");
       } catch (error) {
         console.error("Error querying leads by index:", error);
-        // Fallback to full table scan if index fails
-        try {
-          const all = await ctx.db.query("leads").collect();
-          leads = all.filter((l) => String(l.assignedTo ?? "") === String(currentUser._id));
-          console.log("getMyLeads: Found", leads.length, "leads via fallback scan");
-        } catch (fallbackError) {
-          console.error("Fallback query also failed:", fallbackError);
-          return [];
-        }
+        return [];
       }
-
-      // Filter out not relevant leads
-      const beforeFilter = leads.length;
-      leads = leads.filter((l) => l.status !== LEAD_STATUS.NOT_RELEVANT);
-      console.log("getMyLeads: After filtering not relevant:", leads.length, "(removed", beforeFilter - leads.length, ")");
-
-      // Apply no_followup filter if specified
-      if (args.filter === "no_followup") {
-        const beforeNoFollowup = leads.length;
-        leads = leads.filter((l) => !l.nextFollowup);
-        console.log("getMyLeads: After no_followup filter:", leads.length, "(removed", beforeNoFollowup - leads.length, ")");
-      }
-
-      const limit = Math.min(Math.max(args.limit ?? 100, 1), 500);
 
       // Sort by lastActivityTime (most recent first), fallback to _creationTime
       leads.sort((a, b) => {
@@ -223,9 +242,7 @@ export const getMyLeads = query({
         return bTime - aTime; // Descending order (newest first)
       });
       
-      const result = leads.slice(0, limit);
-      console.log("getMyLeads: Returning", result.length, "leads (limit:", limit, ")");
-      return result;
+      return leads;
     } catch (err) {
       console.error("getMyLeads outer error:", err);
       return [];
@@ -345,8 +362,14 @@ export const createLead = mutation({
     }
 
     // No duplicate: create new lead with normalized phone
+    // Get next serial number
+    const allLeads = await ctx.db.query("leads").collect();
+    const maxSerial = allLeads.length === 0 ? 0 : Math.max(...allLeads.map((l: any) => l.serialNo || 0));
+    const nextSerial = maxSerial + 1;
+    
     const leadId = await ctx.db.insert("leads", {
       ...args,
+      serialNo: nextSerial,
       mobileNo: normalizedMobile,
       altMobileNo: normalizedAltMobile,
       status: LEAD_STATUS.YET_TO_DECIDE,
@@ -775,8 +798,14 @@ export const bulkCreateLeads = mutation({
         });
       } else {
         // Create fresh lead with normalized phone
+        // Get next serial number
+        const allLeads = await ctx.db.query("leads").collect();
+        const maxSerial = allLeads.length === 0 ? 0 : Math.max(...allLeads.map((l: any) => l.serialNo || 0));
+        const nextSerial = maxSerial + 1;
+        
         const leadId = await ctx.db.insert("leads", {
           ...incoming,
+          serialNo: nextSerial,
           mobileNo: normalizedMobile,
           altMobileNo: normalizedAltMobile,
           state: finalState,
@@ -1554,5 +1583,261 @@ export const deleteLeadsWithPlaceholderEmail = mutation({
     });
 
     return { deletedCount };
+  },
+});
+
+export const assignSequentialNumbers = mutation({
+  args: {
+    currentUserId: v.id("users"),
+  },
+  handler: async (ctx, args) => {
+    const currentUser = await ctx.db.get(args.currentUserId);
+    if (!currentUser || currentUser.role !== ROLES.ADMIN) {
+      throw new Error("Unauthorized");
+    }
+
+    const allLeads = await ctx.db.query("leads").collect();
+    
+    // Sort by creation time to maintain consistent ordering
+    allLeads.sort((a, b) => a._creationTime - b._creationTime);
+    
+    let counter = 1;
+    let assigned = 0;
+    for (const lead of allLeads) {
+      // Always assign/reassign to ensure sequential ordering
+      await ctx.db.patch(lead._id, { serialNo: counter });
+      assigned++;
+      counter++;
+    }
+    
+    await ctx.db.insert("auditLogs", {
+      userId: currentUser._id,
+      action: "ASSIGN_SEQUENTIAL_NUMBERS",
+      details: `Assigned sequential numbers to ${assigned} leads`,
+      timestamp: Date.now(),
+    });
+    
+    return { success: true, totalLeads: allLeads.length, assigned };
+  },
+});
+
+export const assignSerialNumbersBatched = mutation({
+  args: {
+    currentUserId: v.id("users"),
+    batchSize: v.optional(v.number()),
+    startAfter: v.optional(v.number()), // _creationTime to start after
+  },
+  handler: async (ctx, args) => {
+    const currentUser = await ctx.db.get(args.currentUserId);
+    if (!currentUser || currentUser.role !== ROLES.ADMIN) {
+      throw new Error("Unauthorized");
+    }
+
+    const batchSize = args.batchSize || 100;
+    
+    // Get leads ordered by creation time, take a batch
+    let query = ctx.db.query("leads").order("asc");
+    
+    if (args.startAfter !== undefined) {
+      query = query.filter((q) => q.gt(q.field("_creationTime"), args.startAfter!));
+    }
+    
+    const leads = await query.take(batchSize);
+    
+    // Filter to only leads without serial numbers
+    const leadsWithoutSerial = leads.filter(l => !l.serialNo);
+    
+    if (leadsWithoutSerial.length === 0) {
+      return { 
+        success: true, 
+        processed: 0, 
+        hasMore: leads.length === batchSize,
+        lastProcessedTime: leads.length > 0 ? leads[leads.length - 1]._creationTime : undefined,
+        message: "All leads in this batch have serial numbers assigned"
+      };
+    }
+    
+    // Get the current max serial number by querying with index
+    const leadsWithSerial = await ctx.db
+      .query("leads")
+      .withIndex("by_serialNo")
+      .order("desc")
+      .take(1);
+    
+    const maxSerial = leadsWithSerial.length > 0 && leadsWithSerial[0].serialNo
+      ? leadsWithSerial[0].serialNo 
+      : 0;
+    
+    let counter = maxSerial + 1;
+    let assigned = 0;
+    
+    for (const lead of leadsWithoutSerial) {
+      await ctx.db.patch(lead._id, { serialNo: counter });
+      assigned++;
+      counter++;
+    }
+    
+    const lastProcessedTime = leadsWithoutSerial[leadsWithoutSerial.length - 1]._creationTime;
+    const hasMore = leads.length === batchSize;
+    
+    await ctx.db.insert("auditLogs", {
+      userId: currentUser._id,
+      action: "ASSIGN_SEQUENTIAL_NUMBERS_BATCH",
+      details: `Assigned serial numbers to ${assigned} leads (batch)`,
+      timestamp: Date.now(),
+    });
+    
+    return { 
+      success: true, 
+      processed: assigned,
+      hasMore,
+      lastProcessedTime,
+      nextSerial: counter,
+      message: `Assigned ${assigned} serial numbers. ${hasMore ? 'More leads to process.' : 'All done!'}`
+    };
+  },
+});
+
+export const getLeadBySerialNo = query({
+  args: { serialNo: v.number() },
+  handler: async (ctx, args) => {
+    const lead = await ctx.db
+      .query("leads")
+      .withIndex("by_serialNo", (q) => q.eq("serialNo", args.serialNo))
+      .first();
+    
+    if (!lead) {
+      return null;
+    }
+    
+    // Enrich with assignee name if assigned
+    let assignedUserName = null;
+    if (lead.assignedTo) {
+      const user = await ctx.db.get(lead.assignedTo);
+      if (user) {
+        assignedUserName = user.name || user.username || "Unknown";
+      }
+    }
+    
+    // Fetch all comments for this lead
+    const comments = await ctx.db
+      .query("comments")
+      .withIndex("leadId", (q) => q.eq("leadId", lead._id))
+      .collect();
+    
+    // Enrich comments with user names
+    const enrichedComments = await Promise.all(
+      comments.map(async (comment) => {
+        let userName = "System";
+        if (comment.userId) {
+          try {
+            const user = await ctx.db.get(comment.userId);
+            if (user) {
+              userName = user.name || user.username || "Unknown";
+            }
+          } catch {
+            userName = "Unknown";
+          }
+        }
+        return {
+          _id: comment._id,
+          content: comment.content,
+          timestamp: comment.timestamp,
+          userName,
+        };
+      })
+    );
+    
+    // Sort comments by timestamp (oldest first)
+    enrichedComments.sort((a, b) => a.timestamp - b.timestamp);
+    
+    return {
+      ...lead,
+      assignedUserName,
+      comments: enrichedComments,
+    };
+  },
+});
+
+export const ensureSerialNumbersAssigned = internalAction({
+  args: {},
+  handler: async (ctx): Promise<{ success: boolean; message: string; skipped?: boolean; result?: any }> => {
+    try {
+      // Check if serial numbers have already been assigned
+      const flag = await ctx.runQuery(internal.leads.checkSerialNumberFlag, {});
+      
+      if (flag) {
+        // Already assigned, skip
+        return { success: true, message: "Serial numbers already assigned", skipped: true };
+      }
+      
+      // Run the internal mutation directly (no user ID needed)
+      const result: any = await ctx.runMutation(internal.leads.assignSequentialNumbersInternal, {});
+      
+      // Set the flag to prevent future runs
+      await ctx.runMutation(internal.leads.setSerialNumberFlag, {});
+      
+      console.log("Serial numbers assigned successfully:", result);
+      return { success: true, message: "Serial numbers assigned", result };
+    } catch (error: any) {
+      console.error("Error in ensureSerialNumbersAssigned:", error);
+      return { success: false, message: error.message || "Unknown error" };
+    }
+  },
+});
+
+export const checkSerialNumberFlag = internalQuery({
+  args: {},
+  handler: async (ctx) => {
+    const flag = await ctx.db
+      .query("systemFlags")
+      .withIndex("by_key", (q) => q.eq("key", "serialNumbersAssigned"))
+      .first();
+    
+    return flag?.value ?? false;
+  },
+});
+
+export const setSerialNumberFlag = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    const existing = await ctx.db
+      .query("systemFlags")
+      .withIndex("by_key", (q) => q.eq("key", "serialNumbersAssigned"))
+      .first();
+    
+    if (existing) {
+      await ctx.db.patch(existing._id, { value: true, usedAt: Date.now() });
+    } else {
+      await ctx.db.insert("systemFlags", {
+        key: "serialNumbersAssigned",
+        value: true,
+        usedAt: Date.now(),
+      });
+    }
+  },
+});
+
+// Add this new internal mutation for direct serial number assignment
+export const assignSequentialNumbersInternal = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    const allLeads = await ctx.db.query("leads").collect();
+    
+    // Sort by creation time to maintain consistent ordering
+    allLeads.sort((a, b) => a._creationTime - b._creationTime);
+    
+    let counter = 1;
+    let assigned = 0;
+    for (const lead of allLeads) {
+      // Always assign/reassign to ensure sequential ordering
+      await ctx.db.patch(lead._id, { serialNo: counter });
+      assigned++;
+      counter++;
+    }
+    
+    console.log(`Assigned sequential numbers to ${assigned} leads`);
+    
+    return { success: true, totalLeads: allLeads.length, assigned };
   },
 });
