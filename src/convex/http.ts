@@ -289,7 +289,7 @@ http.route({
                 if (messageType === "reaction") {
                   const reaction = message.reaction;
                   const targetMessageId = reaction.message_id;
-                  const emoji = reaction.emoji || ""; // Empty string means remove reaction usually, but we'll just store what we get
+                  const emoji = reaction.emoji || "";
 
                   await ctx.runMutation((internal as any).webhook.handleWhatsAppReaction, {
                     messageId: targetMessageId,
@@ -297,7 +297,6 @@ http.route({
                     phoneNumber,
                   });
                   
-                  // Skip storing this as a new message
                   continue;
                 }
 
@@ -322,7 +321,6 @@ http.route({
                   const mimeType = message[messageType]?.mime_type;
                   
                   if (mediaId) {
-                    // Fetch media URL from WhatsApp (not the full file, just the URL)
                     const mediaResult = await processInboundMedia(ctx, mediaId, messageType, mimeType);
                     
                     await ctx.runMutation(internal.webhook.storeWhatsAppMessage, {
@@ -336,6 +334,7 @@ http.route({
                       caption: caption,
                     });
                   }
+                  continue;
                 } else {
                   messageText = `[${messageType}]`;
                 }
@@ -364,7 +363,10 @@ http.route({
               // Handle status updates (delivered, read, sent, failed)
               const statuses = value.statuses || [];
               for (const status of statuses) {
-                await ctx.runMutation((internal as any).webhook.updateWhatsAppMessageStatus, {
+                console.log(`[WhatsApp] Status update for message ${status.id}: ${status.status}`);
+                
+                // Update message status in database
+                await ctx.runMutation(internal.webhook.updateWhatsAppMessageStatus, {
                   messageId: status.id,
                   status: status.status,
                   metadata: status,
@@ -991,7 +993,7 @@ http.route({
   }),
 });
 
-// GET /getleads - Returns all leads with comments, filtering out unassigned Pharmavends leads
+// GET /getleads - Returns leads with comments, with pagination support
 http.route({
   path: "/getleads",
   method: "OPTIONS",
@@ -1003,50 +1005,28 @@ http.route({
 http.route({
   path: "/getleads",
   method: "GET",
-  handler: httpAction(async (ctx, _req) => {
+  handler: httpAction(async (ctx, req) => {
     try {
-      // Get an admin user to run the query
-      const adminUserId = await ensureAdminUserId(ctx);
+      const url = new URL(req.url);
+      const limitParam = Number(url.searchParams.get("limit") ?? "100");
+      const limit = Math.max(1, Math.min(limitParam, 500)); // Cap at 500 for safety
+      const cursor = url.searchParams.get("cursor") || null;
       
-      // Fetch all leads
-      const allLeads: any[] = await ctx.runQuery(api.leads.getAllLeads, { 
-        filter: "all", 
-        currentUserId: adminUserId,
-        limit: 10000
+      // Use internal query for efficient batched retrieval
+      const result = await ctx.runQuery(internal.leads.getAllLeadsWithCommentsInternal, {
+        limit,
+        cursor,
       });
-      
-      // Filter out unassigned Pharmavends leads
-      const filteredLeads = allLeads.filter((lead) => {
-        const source = (lead.source || "").toLowerCase();
-        const isPharmavends = source.includes("pharmavend");
-        const isUnassigned = !lead.assignedTo;
-        
-        // Exclude if it's Pharmavends AND unassigned
-        return !(isPharmavends && isUnassigned);
-      });
-      
-      // Enrich each lead with comments
-      const enrichedLeads = await Promise.all(
-        filteredLeads.map(async (lead) => {
-          // Fetch comments for this lead
-          const comments = await ctx.runQuery(api.comments.getLeadComments, {
-            leadId: lead._id,
-            currentUserId: adminUserId,
-          });
-          
-          return {
-            ...lead,
-            comments: comments || [],
-          };
-        })
-      );
       
       return corsJson({ 
         ok: true, 
-        count: enrichedLeads.length,
-        leads: enrichedLeads 
+        count: result.leads.length,
+        leads: result.leads,
+        hasMore: result.hasMore,
+        nextCursor: result.nextCursor,
       }, 200);
     } catch (e: any) {
+      console.error("[/getleads] Error:", e);
       return corsJson({ 
         ok: false, 
         error: e.message || "Failed to retrieve leads" 
